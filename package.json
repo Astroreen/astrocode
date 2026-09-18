@@ -1,0 +1,17 @@
+{
+  "name": "astrocode",
+  "version": "0.0.1",
+  "description": "Minimal model-aware opencode plugin + agent personas",
+  "type": "module",
+  "main": "src/index.ts",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
