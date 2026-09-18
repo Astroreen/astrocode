@@ -182,7 +182,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
 ## TODOs
 
-- [ ] 0. Bootstrap repo + private GitHub push
+- [x] 0. Bootstrap repo + private GitHub push
 
   IDEMPOTENCY GUARD (check FIRST, before doing anything else):
   - Run `git -C ~/Documents/opencode/astrocode rev-parse --is-inside-work-tree` and `git -C ~/Documents/opencode/astrocode remote -v`.
@@ -221,7 +221,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — chore: initial commit (plan + scaffold) — files: all; Pre-commit: none
 
-- [ ] 1. Scaffold project + bun test infrastructure
+- [x] 1. Scaffold project + bun test infrastructure
 
   What to do:
   - package.json (type module; name astrocode; scripts test:bun test, typecheck:tsc --noEmit; devDeps @opencode-ai/plugin, typescript, @types/bun)
