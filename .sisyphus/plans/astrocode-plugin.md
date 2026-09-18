@@ -252,7 +252,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — chore(scaffold): init astrocode plugin project — files: package.json, tsconfig.json, .gitignore, test/smoke.test.ts; Pre-commit: bun test
 
-- [ ] 2. SPIKE — resolve hook semantics (A1/A2/A3) + lock getGuards contract [GATE]
+- [x] 2. SPIKE — resolve hook semantics (A1/A2/A3) + lock getGuards contract [GATE]
 
   What to do:
   - Throwaway probe plugin implementing experimental.chat.system.transform writing to /tmp/astrocode-spike-dump.json: the FULL output.system array (before mutation), input.model.{providerID,modelID}, input.sessionID
@@ -285,7 +285,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — docs(spike): hook semantics + getGuards contract — files: docs/spike-findings.md, spike/; Pre-commit: none
 
-- [ ] 3. resolveFamily() model-family router + unit tests
+- [x] 3. resolveFamily() model-family router + unit tests
 
   What to do:
   - src/models/resolveFamily.ts: export function resolveFamily(model: {providerID: string; modelID: string}): "claude" | "cheap-openrouter" | "fallback" per AD-3
@@ -314,7 +314,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — feat(models): add resolveFamily router — files: src/models/resolveFamily.ts, test/resolveFamily.test.ts; Pre-commit: bun test test/resolveFamily.test.ts
 
-- [ ] 4. Guard strings (verbatim) + prompt-dump side-channel
+- [x] 4. Guard strings (verbatim) + prompt-dump side-channel
 
   What to do:
   - src/prompts/guards.ts: getGuards(family): string[] — verbatim from OMO bundle (KIMI_TOOL_LOOP_GUARD, GPT_APPLY_PATCH_GUIDANCE). Map: cheap-openrouter -> [tool-loop, explicit-tool-call-format]; fallback -> all (most defensive); claude -> []
@@ -379,7 +379,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — feat(plugin): model-aware system.transform + chat.params — files: src/index.ts, test/index.test.ts; Pre-commit: bun test
 
-- [ ] 6. MVP agent personas (.md) — sisyphus, explore, librarian, oracle, prometheus
+- [x] 6. MVP agent personas (.md) — sisyphus, explore, librarian, oracle, prometheus
 
   What to do:
   - Each agents/{name}.md: frontmatter (description, mode: subagent or all for sisyphus/prometheus, temperature, tools allowlist, optional model: override per AgentConfig.model schema — https://opencode.ai/config.json $defs.AgentConfig) + markdown body
@@ -419,7 +419,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — feat(agents): MVP personas — files: agents/*.md; Pre-commit: grep guardrail
 
-- [ ] 7. Extended agent personas (.md) — atlas, momus, metis, multimodal-looker, sisyphus-junior, hephaestus
+- [x] 7. Extended agent personas (.md) — atlas, momus, metis, multimodal-looker, sisyphus-junior, hephaestus
 
   What to do: same as Task 6 for the extended set. multimodal-looker may need a tools allowlist reflecting its role; sisyphus-junior is the delegated-worker persona (reference synchronous task only)
 

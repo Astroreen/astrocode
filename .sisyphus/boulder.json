@@ -18,6 +18,24 @@
       "agent": "Sisyphus-Junior",
       "category": "deep",
       "updated_at": "2026-09-18T19:32:28.880Z"
+    },
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "resolveFamily() model-family router + unit tests",
+      "session_id": "ses_f49f31395ffesoBRvSjK2jrU5h",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-09-18T19:50:30.154Z"
+    },
+    "todo:5": {
+      "task_key": "todo:5",
+      "task_label": "5",
+      "task_title": "Plugin entry src/index.ts — system.transform append + chat.params",
+      "session_id": "ses_f49e87aa0ffeUW8rrHB2WhzSjp",
+      "agent": "Sisyphus-Junior",
+      "category": "writing",
+      "updated_at": "2026-09-18T20:05:42.748Z"
     }
   }
 }
