@@ -23,7 +23,7 @@ export async function AstrocodeSpikeProbe(ctx) {
         sessionID: input.sessionID ?? null,
         model: {
           providerID: input.model?.providerID ?? null,
-          modelID: input.model?.modelID ?? null,
+          id: input.model?.id ?? null,
         },
         directory: ctx.directory,
         worktree: ctx.worktree,
