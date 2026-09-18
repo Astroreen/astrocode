@@ -10,6 +10,7 @@
 > - `src/models/resolveFamily.ts` — providerID/modelID -> family router (claude | cheap-openrouter | fallback)
 > - `src/prompts/guards.ts` — verbatim-copied defensive guards; `src/prompts/dump.ts` — prompt-dump side-channel
 > - `bun test` suite; README with nix meridian-pattern deploy snippet
+> - `docs/fallback-spike-findings.md` — model-fallback feasibility investigation + recommendation
 >
 > **Estimated Effort**: Medium (~2-3 focused days)
 > **Parallel Execution**: YES — Wave 0 bootstrap -> Wave 1 (spike gate) -> Wave 2A routing || 2B personas -> Wave 3 integration
@@ -78,6 +79,7 @@ Deliver a stable, minimal opencode plugin + native agent personas giving model-a
 - package.json, tsconfig.json, README.md, .gitignore
 - Private GitHub repo (Astroreen) pushed
 - Nix wiring snippet (meridian-pattern) in README
+- docs/fallback-spike-findings.md (Task 11 output — feasibility verdict + recommendation)
 
 ### Definition of Done
 - [ ] bun test -> all pass
@@ -139,6 +141,7 @@ Wave 2A || 2B (after Task 2 — decoupled by getGuards contract):
 - Task 5: src/index.ts plugin (system.transform append + chat.params) [deep]
 - Task 6: MVP personas .md (sisyphus, explore, librarian, oracle, prometheus) [writing]
 - Task 7: Extended personas .md (atlas, momus, metis, multimodal-looker, sisyphus-junior, hephaestus) [writing]
+- Task 11: SPIKE — model-fallback feasibility via plugin hooks [deep]
 
 Wave 3 (integration + deploy):
 - Task 8: Integration wiring + prompt-swap integration QA [deep]
@@ -157,20 +160,21 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 ### Dependency Matrix
 - 0: deps none -> blocks 1 (repo must exist before commits)
 - 1: deps 0 -> blocks 2,3,4,5
-- 2 (SPIKE/GATE): deps 1 -> blocks 5,6,7,8 (A2 result decides persona delivery path)
+- 2 (SPIKE/GATE): deps 1 -> blocks 5,6,7,8,11 (A2 result decides persona delivery path)
 - 3: deps 1 -> blocks 5,8
 - 4: deps 1 -> blocks 5,8
 - 5: deps 2,3,4 -> blocks 8
 - 6: deps 2 -> blocks 8
 - 7: deps 2 -> blocks 8
 - 8: deps 5,6,7 -> blocks 9,10
-- 9: deps 8 -> blocks 10
+- 9: deps 8,11 -> blocks 10
 - 10: deps 8,9 -> blocks F1-F4
+- 11 (SPIKE): deps 2 -> blocks 9
 
 ### Agent Dispatch Summary
 - Wave 0: T0 -> git
 - Wave 1: T1 -> quick; T2 -> deep
-- Wave 2: T3 -> unspecified-high; T4 -> unspecified-high; T5 -> deep; T6 -> writing; T7 -> writing
+- Wave 2: T3 -> unspecified-high; T4 -> unspecified-high; T5 -> deep; T6 -> writing; T7 -> writing; T11 -> deep
 - Wave 3: T8 -> deep; T9 -> writing; T10 -> quick
 - FINAL: F1 -> oracle; F2 -> unspecified-high; F3 -> unspecified-high; F4 -> deep
 
@@ -180,13 +184,18 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
 - [ ] 0. Bootstrap repo + private GitHub push
 
-  What to do:
+  IDEMPOTENCY GUARD (check FIRST, before doing anything else):
+  - Run `git -C ~/Documents/opencode/astrocode rev-parse --is-inside-work-tree` and `git -C ~/Documents/opencode/astrocode remote -v`.
+  - If already a git repo AND `origin` already points to `github.com/Astroreen/astrocode` -> bootstrap is DONE. Skip `git init` and `gh repo create` entirely (repo already exists on GitHub; `gh repo create` will error "Name already exists" if run again). Only verify via Acceptance Criteria below and stop.
+  - If partially done (e.g. git init'd but no remote) -> only perform the missing steps.
+
+  What to do (only if NOT already done, per guard above):
   - git init in ~/Documents/opencode/astrocode; set LOCAL identity: git config user.name "Astroreen", git config user.email "ilja.zoludev@gmail.com" (global identity is empty)
   - Ensure scaffold files exist (Task 1 output) + this plan; initial commit
   - Create private GitHub repo via gh repo create astrocode --private --source=. --remote=origin (gh authenticated as Astroreen, scope repo present)
   - git push -u origin main (normalize branch to main)
 
-  Must NOT do: do not make repo public; do not add secrets; do not add to global opencode config
+  Must NOT do: do not make repo public; do not add secrets; do not add to global opencode config; do not re-run `gh repo create` if origin already exists; do not create a duplicate initial commit if one already exists
 
   Recommended Agent Profile: Category git; Skills none
 
@@ -373,7 +382,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 - [ ] 6. MVP agent personas (.md) — sisyphus, explore, librarian, oracle, prometheus
 
   What to do:
-  - Each agents/{name}.md: frontmatter (description, mode: subagent or all for sisyphus/prometheus, temperature, tools allowlist) + markdown body
+  - Each agents/{name}.md: frontmatter (description, mode: subagent or all for sisyphus/prometheus, temperature, tools allowlist, optional model: override per AgentConfig.model schema — https://opencode.ai/config.json $defs.AgentConfig) + markdown body
   - Extract base persona intent from OMO bundle (dist/agents/{name}/, dist/index.js), ADAPT per AD-4: strip parallel/background/delegate-orchestration; rewrite delegation to native synchronous task
   - Keep prompts model-agnostic (plugin adds guards at runtime) — no per-model guard text in .md
 
@@ -383,11 +392,21 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Parallelization: YES (Wave 2B) | Blocks: 8 | Blocked By: 2
 
-  References: ~/.cache/opencode/node_modules/oh-my-openagent/dist/agents/{sisyphus,explore,librarian,oracle,prometheus}/; existing home/astroreen/profiles/terminal/ai/agents/PromptMaster.md, PromptHardener.md (frontmatter format); AD-4; WHY: personas are priority #1; native .md = stable delivery
+  References (verified via GitHub source, repo https://github.com/code-yeongyu/oh-my-openagent — public, MIT):
+  - explore: `packages/omo-opencode/src/agents/explore.ts` (trivial — single inline string literal in `createExploreAgent()`)
+  - librarian: `packages/omo-opencode/src/agents/librarian.ts` (trivial — single inline string literal in `createLibrarianAgent()`)
+  - oracle: `packages/omo-opencode/src/agents/oracle.ts` (trivial — `ORACLE_DEFAULT_PROMPT` / `ORACLE_GPT_PROMPT` / `ORACLE_GPT_5_5_PROMPT`; use `ORACLE_DEFAULT_PROMPT`)
+  - prometheus: `packages/prompts-core/prompts/prometheus/default.md` (trivial — single markdown file, no composition, loaded via `loadPromptSync()`)
+  - sisyphus (HARDEST — dynamically assembled, do NOT expect a single copyable string): router `packages/omo-opencode/src/agents/sisyphus-agent-factory.ts` -> `sisyphus-dynamic-prompt-builder.ts` calling `buildSisyphusDynamicPromptContent()` -> `sisyphus-dynamic-prompt-sections.ts` (13 section-builder functions, mostly from shared `dynamic-agent-prompt-builder.ts`: agentIdentity, antiPatterns, categorySkillsGuide, delegationTable, exploreSection, hardBlocks, keyTriggers, librarianSection, nonClaudePlannerSection, oracleSection, parallelDelegationSection, taskManagementSection, toolSelection) -> 4 render layers `sisyphus-dynamic-prompt-{role,exploration,execution,style}.ts` -> model-variant body, use `sisyphus/default.ts` (Claude/default variant; ignore the other 9 model-variant files under `sisyphus/`). Executor MUST read `sisyphus-dynamic-prompt-sections.ts` first to learn the assembly ORDER, then concatenate section outputs, THEN apply AD-4 strip (drop `parallelDelegationSection` and any task/delegate-parallel content entirely — these sections exist specifically for the machinery this plan drops).
+  - IMPORTANT — do NOT use `~/.cache/opencode/node_modules/oh-my-openagent/dist/agents/*.d.ts` as a prompt-text source: verified locally these are TYPE-ONLY declarations (no literal prompt strings) for explore/librarian/oracle/sisyphus; only `momus.d.ts` happens to inline its prompt (see Task 7). Use the GitHub paths above instead.
+  - existing `home/astroreen/profiles/terminal/ai/agents/PromptMaster.md`, `PromptHardener.md` (frontmatter format reference)
+  - AD-4 (strip all parallel/background/delegate-orchestration instructions; rewrite around native synchronous `task` tool)
+  - WHY: personas are priority #1; native .md = stable delivery
 
   Acceptance Criteria:
   - [ ] 5 .md files with valid frontmatter (parseable)
   - [ ] grep -iE "background_output|delegate-task|run_in_background|parallel wave" agents/*.md -> 0 matches
+  - [ ] frontmatter parses cleanly whether or not model: is present (optional field per AgentConfig schema — no default forced by this task, resolvable also via opencode.jsonc agent.<name>.model)
 
   QA Scenarios:
   Scenario: personas load in opencode (happy path)
@@ -410,7 +429,15 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Parallelization: YES (Wave 2B) | Blocks: 8 | Blocked By: 2
 
-  References: ~/.cache/opencode/node_modules/oh-my-openagent/dist/agents/{atlas,momus,metis,multimodal-looker,sisyphus-junior,hephaestus}/; same frontmatter pattern as Task 6
+  References (verified via GitHub source, repo https://github.com/code-yeongyu/oh-my-openagent — public, MIT):
+  - atlas (HARD — markdown base + runtime injections): `packages/prompts-core/prompts/atlas/default.md` (use this variant; siblings `gpt.md`/`gemini.md`/`kimi.md`/`kimi-k2-7.md`/`opus-4-7.md`/`glm.md` are other model variants, skip) + `packages/omo-opencode/src/agents/atlas/agent.ts` (variant router) + `prompt-section-builder.ts` (fills runtime `{PLACEHOLDER}` tokens). Strip any placeholder that expands to parallel/delegate content per AD-4.
+  - momus: `packages/omo-opencode/src/agents/momus.ts` -> `MOMUS_DEFAULT_PROMPT` constant (already fully extracted verbatim during this planning session — ~4000-word plan-reviewer prompt, no further lookup needed; use as-is). Ignore `momus-gpt-5-6.ts` (GPT variant, not needed).
+  - metis: `packages/omo-opencode/src/agents/metis.ts` -> `METIS_SYSTEM_PROMPT` constant (default variant; ignore `METIS_K2_7_SYSTEM_PROMPT`, that's the Kimi variant)
+  - multimodal-looker: `packages/omo-opencode/src/agents/multimodal-looker.ts` (trivial — single inline string literal in `createMultimodalLookerAgent()`)
+  - sisyphus-junior (MODERATE — self-contained model variants, no cross-file assembly): `packages/omo-opencode/src/agents/sisyphus-junior/agent.ts` (router) + `default.ts` (use this variant; ignore `gpt.ts`/`gpt-5-4.ts`/`gpt-5-5.ts`/`gemini.ts`/`glm-5-2.ts`/`kimi-k2-6.ts`/`kimi-k2-7.ts` — other model variants)
+  - hephaestus (MODERATE): `packages/omo-opencode/src/agents/hephaestus/agent.ts` (router) + `gpt.ts` (use as base variant; `gpt-5-4.ts`/`gpt-5-5.ts`/`gpt-5-6.ts` are other GPT-version variants, skip — note hephaestus has no plain-Claude variant in source, adapt from `gpt.ts` and strip GPT-specific tool guidance)
+  - IMPORTANT — do NOT use `~/.cache/opencode/node_modules/oh-my-openagent/dist/agents/*.d.ts` as a prompt-text source for atlas/metis/multimodal-looker/sisyphus-junior/hephaestus: verified locally these are TYPE-ONLY declarations (no literal prompt strings); only `momus.d.ts` happens to inline its prompt, which is why momus above already has a ready-made string.
+  - same frontmatter pattern as Task 6
 
   Acceptance Criteria:
   - [ ] 6 .md files with valid frontmatter
@@ -464,18 +491,20 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
   - Document: what astrocode is; architecture (hybrid .md personas + thin plugin); per-project enable (.opencode/opencode.jsonc plugin entry + copy agents); env vars (ASTROCODE_DUMP)
   - NixOS wiring snippet (meridian-pattern): home.activation clone/install + copy agents/ to ~/.config/opencode/agents/, referencing home/modules/terminal/ai/meridian.nix
   - Version-pin caveat: experimental.chat.system.transform is experimental -> pin opencode in nix; plugin degrades gracefully (no-op) if hook shape changes
+  - Document per-agent model override (model: field in frontmatter / agent.<name>.model in opencode.jsonc) and summarize Task 11's model-fallback feasibility verdict + recommended approach (native retry design OR OpenRouter models: [...] array)
 
   Must NOT do: no instruction to add to global programs.opencode.settings.plugin
 
   Recommended Agent Profile: Category writing; Skills none
 
-  Parallelization: NO | Blocks: 10 | Blocked By: 8
+  Parallelization: NO | Blocks: 10 | Blocked By: 8, 11
 
-  References: home/modules/terminal/ai/meridian.nix (activation-clone-install); AD-1..AD-4; WHY: user deploys via nix — needs copy-paste-ready snippet
+  References: home/modules/terminal/ai/meridian.nix (activation-clone-install); AD-1..AD-4; docs/fallback-spike-findings.md (Task 11 output); WHY: user deploys via nix — needs copy-paste-ready snippet; fallback recommendation must be documented so user knows the actual mechanism (native or OpenRouter-level)
 
   Acceptance Criteria:
   - [ ] README covers purpose, architecture, per-project enable, nix snippet, version-pin caveat
   - [ ] nix snippet references meridian pattern explicitly
+  - [ ] README documents model: override field and Task 11's fallback recommendation (grep README.md for "fallback")
 
   QA Scenarios:
   Scenario: README completeness (happy path)
@@ -507,6 +536,51 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
     Evidence: .sisyphus/evidence/task-10-nix-doc.txt
 
   Commit: YES — docs(deploy): finalize nix wiring guidance — files: README.md; Pre-commit: none
+
+- [ ] 11. SPIKE — model-fallback feasibility via plugin hooks
+
+  What to do:
+  - Re-verify the full @opencode-ai/plugin Hooks surface (~/.cache/opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts): event, config, experimental.chat.messages.transform, experimental.chat.system.transform, experimental.session.compacting, experimental.text.complete. Grep specifically for any error/retry/onError-shaped field that may have been missed.
+  - Determine: is there a hook that fires BEFORE the model call is dispatched (interceptable) vs only AFTER a response/error is already final (too late to retry with a different model)?
+  - Cross-check the official core config schema (https://opencode.ai/config.json, $defs.AgentConfig / $defs.ProviderConfig / top-level Config) to confirm (already done once this session) there is no native fallback/fallback_models field — re-confirm still true, note schema fetch timestamp.
+  - Review OMO's own oh-my-opencode.schema.json (~/.cache/opencode/node_modules/oh-my-openagent/dist/oh-my-opencode.schema.json) model_fallback/fallback_models keys as a reference for what a hand-rolled fallback config shape could look like — reference only, do not copy OMO's implementation code.
+  - Verdict: if a viable interception point exists -> design (do NOT implement) a getFallbackModel(family): string contract + note which hook it would attach to. If NOT viable -> document why, and recommend OpenRouter's provider-level `models: [...]` fallback array (https://openrouter.ai/docs) as the practical alternative, including an example config snippet for how the user would list a primary + fallback model for their cheap-openrouter family.
+  - Write docs/fallback-spike-findings.md: hooks evaluated, feasibility verdict (YES/NO/PARTIAL), evidence per hook, final recommendation.
+
+  Must NOT do:
+  - Do not implement actual fallback retry logic in src/index.ts or resolveFamily.ts in this task — SPIKE scope is investigation + documentation only
+  - Do not change AD-3's "fallback" family meaning (defensive-guard classification for unknown models) — this task's "fallback" (model-availability failover) is a distinct concept, keep them clearly separated in the findings doc
+
+  Recommended Agent Profile: Category deep; Skills none
+  - Reason: same research-and-decide nature as Task 2's SPIKE — requires reading SDK types, cross-referencing schemas, and producing a reasoned verdict, not routine implementation
+
+  Parallelization: YES (Wave 2A, with Tasks 3,4) | Blocks: 9 | Blocked By: 2
+
+  References:
+  - ~/.cache/opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts — full Hooks list (already enumerated this session: no error/retry hook found)
+  - https://opencode.ai/config.json — official Config/AgentConfig/ProviderConfig schema (confirmed this session: no fallback/fallback_models field anywhere)
+  - ~/.cache/opencode/node_modules/oh-my-openagent/dist/oh-my-opencode.schema.json — OMO's own model_fallback/fallback_models keys (reference for shape only, not implementation)
+  - https://openrouter.ai/docs — OpenRouter's `models: [...]` provider-level fallback array (candidate recommendation if no clean plugin hook exists)
+  - WHY: user asked to verify default-model-per-agent AND fallback-model configurability; default-per-agent is confirmed native (Task 6/7 model: field), fallback is NOT — this SPIKE settles whether astrocode can still deliver it some other way before committing to "not supported"
+
+  Acceptance Criteria:
+  - [ ] docs/fallback-spike-findings.md created with explicit "Feasibility: YES|NO|PARTIAL" line + evidence per hook checked
+  - [ ] If YES/PARTIAL: getFallbackModel(family): string contract documented (signature only, not implemented)
+  - [ ] If NO: OpenRouter models: [...] alternative documented with a concrete example snippet
+  - [ ] grep -riE "getFallbackModel|fallback_models|model_fallback" src/ -> 0 matches (no implementation leaked into plugin code)
+
+  QA Scenarios:
+  Scenario: findings doc exists with explicit verdict (happy path)
+    Tool: Bash
+    Preconditions: Task 11 complete
+    Steps: 1) test -f docs/fallback-spike-findings.md  2) grep -E "Feasibility: (YES|NO|PARTIAL)" docs/fallback-spike-findings.md
+    Expected: file exists, verdict line present with one of YES/NO/PARTIAL; Evidence: .sisyphus/evidence/task-11-findings.txt
+  Scenario: no fallback implementation leaked into plugin source (guardrail/edge)
+    Tool: Bash
+    Steps: 1) grep -riE "getFallbackModel|fallback_models|model_fallback" src/  2) Assert exit 1 (no matches)
+    Expected: no matches — SPIKE stayed docs-only; Evidence: .sisyphus/evidence/task-11-no-impl.txt
+
+  Commit: YES — docs(spike): model-fallback feasibility investigation — files: docs/fallback-spike-findings.md; Pre-commit: none
 
 ---
 
