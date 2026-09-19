@@ -272,3 +272,4 @@ VERDICT: APPROVE (after fix).
 
 ALL FOUR FINAL WAVE VERDICTS: APPROVE. All 12 top-level plan tasks (0-11) complete. Final Wave
 complete. Ready to present consolidated results to user for explicit okay.
+- Критичный .opencode/opencode.jsonc был удалён неавторизованно предыдущим сабагентом; оркестратор восстановил файл из 0dbe72e в working tree.
