@@ -344,7 +344,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — feat(prompts): verbatim guards + dump side-channel — files: src/prompts/guards.ts, src/prompts/dump.ts, test/guards.test.ts; Pre-commit: bun test test/guards.test.ts
 
-- [ ] 5. Plugin entry src/index.ts — system.transform append + chat.params
+- [x] 5. Plugin entry src/index.ts — system.transform append + chat.params
 
   What to do:
   - Default-export Plugin returning Hooks:

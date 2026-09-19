@@ -65,3 +65,28 @@ RESIDUAL MINOR ISSUES (non-blocking, flagged for Final Wave F2/F4 reviewers):
 - sisyphus.md's Phase 2A agent list includes `hephaestus` but the "Delegation Check" numbered lists only mention sisyphus-junior/explore/librarian/oracle/multimodal-looker (hephaestus omitted from the check, present in Selection) — minor inconsistency, not a functional blocker (hephaestus still invocable via subagent_type).
 
 Task 6 and Task 7 checkboxes marked [x] in plan after this verification. Task 2/3/4/6/7 all now confirmed done (7/16 top-level tasks complete: 0,1,2,3,4,6,7). Remaining: 5,8,9,10,11 + Final Wave F1-F4.
+
+## [2026-09-19T10:52Z] Task: 5 plugin entry src/index.ts (done, direct implementation)
+NOTE: task()/subagent delegation unavailable in this session's environment (user confirmed
+directly) — implemented directly instead of delegating, deviating from Atlas orchestrator
+protocol for this one task. Verified same as any subagent output would be (tests+tsc+lsp+manual read).
+
+- src/index.ts default-exports a Plugin (async () => Hooks) implementing:
+  - `experimental.chat.system.transform`: resolveFamily({providerID: input.model.providerID,
+    modelID: input.model.id}) — uses `.id` per Task 3's CALLER NOTE gotcha (real Model has
+    `id`, not `modelID`). Pushes getGuards(family) onto output.system (append only, AD-1).
+    Idempotency via `output.system.includes(guard)` check before push — no extra sentinel
+    needed since getGuards returns the same verbatim module-const strings every call.
+    Calls dumpPrompt({...}) unconditionally (dump.ts itself no-ops if ASTROCODE_DUMP unset).
+  - `chat.params`: only cheap-openrouter family gets temperature=0.3/topP=0.9 override; both
+    claude AND fallback are left untouched (plan text only specified cheap-openrouter override
+    + "claude: leave defaults" — chose to also leave fallback alone rather than assume it
+    should mirror cheap-openrouter's sampling, since Must-NOT forbids scope creep beyond spec).
+  - Both hooks wrapped in try/catch + explicit shape guards (`!output || !Array.isArray(output.system)`
+    for system.transform; `!output || typeof output !== "object"` for chat.params) ->
+    console.error(`[astrocode] ...`) + return, never throws.
+- test/index.test.ts: 8 tests (5 for system.transform incl. cheap/claude/malformed/idempotent/
+  unknown-fallback, 3 for chat.params incl. cheap-override/claude-untouched/null-malformed).
+- Verify: `bun test` -> 34 pass/0 fail (full suite, no regressions); `bunx tsc --noEmit` -> clean;
+  lsp_diagnostics on both new files -> no diagnostics.
+- Commit pending: feat(plugin): model-aware system.transform + chat.params.
