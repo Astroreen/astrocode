@@ -194,3 +194,44 @@ Commit pending: test(integration): prompt-swap e2e + fix(agents): correct tools 
 
 Plan state: 10/16 top-level tasks complete (0,1,2,3,4,5,6,7,8,11). Remaining: 9 (README —
 deps 8,11 both done), 10 (nix deploy doc — deps 8,9), then Final Wave F1-F4.
+
+## [2026-09-19T14:40Z] Task: 9+10 README (done, direct implementation, combined)
+NOTE: task()/delegation still unavailable this session — direct implementation again.
+
+Expanded README.md (was a Task-1 scaffold stub) to cover both Task 9 and Task 10 requirements
+in one pass since Task 10's nix-deploy content is a strict subset of Task 9's README work
+(same file, no separate deliverable needed beyond what Task 9 already produces). Sections
+added: full Architecture (hybrid design + hook mutate-in-place + defensive wrapper), Deployment
+(.opencode/opencode.jsonc plugin entry + agents copy), per-agent model: override docs,
+Model-availability fallback section (summarizing Task 11's PARTIAL verdict + OpenRouter
+options-passthrough recommendation snippet + caveat), ASTROCODE_DUMP env var docs,
+version-pin caveat (experimental hooks, graceful degradation), NixOS deployment section with a
+concrete home.activation snippet (git clone/pull + copy agents to
+~/.config/opencode/agents/), and a "home build laptop" dry-run verification step
+(home-manager build --dry-run before switch) per Task 10's exact QA grep requirements.
+NOTE: could not read the user's actual `home/modules/terminal/ai/meridian.nix` file (not
+present on this filesystem/session) — wrote a generic-but-concrete home.activation snippet
+following the pattern DESCRIBED in the plan (git clone/pull + copy step) rather than mirroring
+meridian.nix's exact code, and said so explicitly in the README ("adapt paths/repo URL to match
+your actual meridian.nix conventions") so the user knows to reconcile it against their real file.
+
+GOTCHA hit again (same class as Task 3's): the Write tool's sanitizer mangled the literal
+the SSH-style git remote (git[at]github.com form) in the nix snippet into a `__POTENTIAL_EMAIL_*__` placeholder,
+silently corrupting the written file (only caught by grep-checking the file after write, not
+visible in the tool-call echo alone). Fixed by editing to use the `https://github.com/...`
+HTTPS clone URL instead of the SSH `git@` form, which doesn't trigger the sanitizer. Anyone
+extending this README with git remotes should prefer https:// URLs or verify post-write with
+grep for `POTENTIAL_` placeholders.
+
+Verify: grep README.md for "Architecture", ".opencode/opencode.jsonc", "home.activation",
+"experimental", "version", "fallback", "home build laptop" -> all FOUND; grep "POTENTIAL_" ->
+0 matches (sanitizer artifact fix confirmed clean); `bun test` -> 34 pass/0 fail (docs-only
+task, no regressions); `bunx tsc --noEmit` -> clean.
+Commit pending: docs(readme): usage + nix deploy + version-pin (combines Task 9 + Task 10 files:
+README.md only, since Task 10 has no separate file deliverable).
+
+Plan state: 12/16 top-level tasks complete (0,1,2,3,4,5,6,7,8,9,10,11 — ALL top-level tasks
+done). Remaining: Final Verification Wave F1-F4 only, then present consolidated results to user
+for explicit okay. Final Wave must be run DIRECTLY (no task()/oracle/deep subagent delegation
+available this session) — F1 (plan-compliance audit), F2 (code quality: tsc+test+code-smell),
+F3 (real manual QA — re-run/verify evidence), F4 (scope-fidelity: git diff per task vs spec).

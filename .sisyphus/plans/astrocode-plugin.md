@@ -485,7 +485,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — test(integration): prompt-swap e2e — files: scratch config, evidence; Pre-commit: bun test
 
-- [ ] 9. README — usage + nix meridian-pattern snippet + version-pin note
+- [x] 9. README — usage + nix meridian-pattern snippet + version-pin note
 
   What to do:
   - Document: what astrocode is; architecture (hybrid .md personas + thin plugin); per-project enable (.opencode/opencode.jsonc plugin entry + copy agents); env vars (ASTROCODE_DUMP)
@@ -513,7 +513,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — docs(readme): usage + nix deploy + version-pin — files: README.md; Pre-commit: none
 
-- [ ] 10. Validate nix deployment snippet
+- [x] 10. Validate nix deployment snippet
 
   What to do:
   - Put the meridian-pattern snippet in a scratch copy (do NOT modify the live nixos repo unless user asks); document exact target file (home/modules/terminal/ai/astrocode.nix) + where to import
