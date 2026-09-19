@@ -586,19 +586,19 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
 ## Final Verification Wave (MANDATORY — after ALL tasks)
 
-- [ ] F1. Plan Compliance Audit — oracle
+- [x] F1. Plan Compliance Audit — oracle
   Read plan end-to-end. Each Must Have -> verify exists (read file/run command). Each Must NOT Have -> grep for forbidden patterns (parallelism, delegate-task, global plugin entry) — reject with file:line if found. Check evidence files exist.
   Output: Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT
 
-- [ ] F2. Code Quality Review — unspecified-high
+- [x] F2. Code Quality Review — unspecified-high
   bunx tsc --noEmit + bun test. Review changed files for as any/@ts-ignore, empty catches (except intentional defensive wrappers — verify they log), dead code, generic names.
   Output: Build [P/F] | Tests [N pass/N fail] | Files [N clean/N issues] | VERDICT
 
-- [ ] F3. Real Manual QA — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high
   Clean state. Execute EVERY task's QA scenarios; capture evidence. Cross-cutting: personas + plugin together in one session (persona .md body + family guards both in dump). Edge: unknown model->fallback guards, mid-session switch.
   Output: Scenarios [N/N] | Integration [N/N] | Edge [N] | VERDICT
 
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F4. Scope Fidelity Check — deep
   Per task: "What to do" vs git diff — 1:1, nothing missing, nothing beyond spec. Confirm Must NOT compliance (no OMO machinery crept in). Flag unaccounted changes.
   Output: Tasks [N/N] | Contamination [CLEAN/N] | Unaccounted [CLEAN/N] | VERDICT
 
