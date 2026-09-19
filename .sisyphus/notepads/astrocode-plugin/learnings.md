@@ -127,3 +127,70 @@ Wrote docs/fallback-spike-findings.md. Key findings:
 Plan state after this task: 9/16 top-level tasks complete (0,1,2,3,4,5,6,7,11). Remaining:
 8 (integration wiring + real opencode session QA), 9 (README — deps 8,11 now both satisfiable),
 10 (nix deploy doc — deps 8,9), then Final Wave F1-F4.
+
+## [2026-09-19T14:15Z] Task: 8 integration wiring + prompt-swap QA (done, direct implementation)
+NOTE: task()/delegation still unavailable this session — direct implementation again.
+
+REAL BUG FOUND AND FIXED (this is why Task 8's real-session QA exists): agents/explore.md,
+librarian.md, oracle.md, prometheus.md used `tools:` as a YAML LIST (`- grep`, `- glob`, ...);
+multimodal-looker.md used `tools: { allowlist: [...] }`. BOTH shapes are invalid against the
+real opencode AgentConfig schema — `tools` is `Record<string, boolean>` (a boolean map, marked
+`@deprecated: use 'permission' field instead` in the official schema at
+https://opencode.ai/config.json $defs.AgentConfig.properties.tools). This crashed
+`opencode run` entirely with "Configuration is invalid ... Expected boolean, got [...]" —
+ALL persona files failed to load, not just the malformed one (opencode validates the whole
+agents/ dir up front). Fixed all 5 files: converted list->map with `true` for each originally
+listed tool, PLUS added explicit `write: false, edit: false, patch: false` (and `bash: false`
+for multimodal-looker) to the read-only-intent agents (explore, librarian, oracle,
+multimodal-looker) and the never-implement planner (prometheus) — since the exact
+allow-vs-deny-list semantics of the deprecated `tools` field are not fully documented, explicit
+`false` entries defensively guarantee no write access regardless of which semantic opencode
+actually implements. This is a genuine correctness bug in Task 6/7's earlier (already-committed)
+work that only real opencode-session QA (not unit tests/grep) could catch — validates the plan's
+insistence on Task 8 being real-session QA, not just automated tests.
+
+Scratch project setup: reused Task 2's spike scratch pattern (isolated
+`XDG_CONFIG_HOME=/tmp/astrocode-task8-xdg` to avoid global-plugin contamination, while
+`~/.local/share/opencode/auth.json` — controlled by XDG_DATA_HOME, untouched — still provides
+real credentials). Confirmed via `opencode auth list`: anthropic (oauth), github-copilot (oauth),
+openrouter (api) all pre-configured. Copied real `agents/*.md` + real `src/index.ts` (via
+`file:///abs/path/src/index.ts` plugin entry, same convention as meridian.ts) into
+`/tmp/astrocode-task8-scratch/.opencode/`.
+
+EMPIRICAL RESULTS (all 3 formal Acceptance Criteria proven via real opencode sessions, not
+mocks): ran `opencode run --auto -m anthropic/claude-haiku-4-5` and
+`-m openrouter/deepseek/deepseek-chat` with `ASTROCODE_DUMP` set, inspected with `jq`:
+- claude family: sys system array length=1 (base only), no guard text — CORRECT (guards=[]).
+- cheap-openrouter family (deepseek): sys array length=3 = base(10287 chars) + TOOL_LOOP_GUARD
+  (334 chars) + APPLY_PATCH_GUIDANCE (116 chars) — guard text confirmed present via
+  `contains("tool_loop_guard")`.
+- BONUS finding: opencode's own internal title-generation call used `openrouter/google/gemini-3.8-flash`
+  (a model NOT in the cheap-openrouter allowlist) — resolveFamily correctly classified it as
+  "fallback" (AD-3's most-defensive fallback), and it ALSO got both guards appended (fallback==
+  cheap-openrouter guard set currently) — real-world proof the fallback classification path
+  works end-to-end, not just in unit tests.
+- Base preservation confirmed via length, not just presence: title-gen base=2096 chars (same
+  value across claude's and fallback's title-gen calls — same underlying base prompt regardless
+  of model), main-turn base=9958 (claude) / 10287 (deepseek) chars — consistently non-zero,
+  proving AD-1 append-not-replace holds in the real runtime.
+- Mid-session model switch (edge case): used `opencode run --auto -m openrouter/deepseek/... "one"`
+  then `opencode run --auto --continue -m anthropic/claude-haiku-4-5 "two"` in the SAME scratch
+  dir (continues last session) — dump showed turn 1 family=cheap-openrouter (guards present),
+  turn 2 family=claude (no guards) — confirms the hook is NOT cached by sessionID and correctly
+  re-evaluates family per-turn.
+- `--agent explore` cannot be invoked as a PRIMARY agent directly (opencode warns "explore is a
+  subagent, not a primary agent, falling back to default agent") — expected, matches its
+  `mode: subagent` frontmatter; subagent .md-body-in-system-array behavior was already
+  empirically confirmed in Task 2's SPIKE (A3 finding, sentinel test) and not re-tested here to
+  conserve context; the persona files now load WITHOUT crashing (the real regression this task
+  fixed), which is the prerequisite Task 8 needed.
+
+Evidence saved: .sisyphus/evidence/task-8-swap-dumps.json (claude+deepseek dump),
+.sisyphus/evidence/task-8-switch.json (mid-session switch dump).
+Verify: `bun test` -> 34 pass/0 fail (frontmatter-only fix, no regressions); `bunx tsc --noEmit`
+-> clean; grep guardrail (background_output|delegate-task|run_in_background|parallel wave) on
+agents/*.md -> 0 matches (exit 1).
+Commit pending: test(integration): prompt-swap e2e + fix(agents): correct tools frontmatter schema.
+
+Plan state: 10/16 top-level tasks complete (0,1,2,3,4,5,6,7,8,11). Remaining: 9 (README —
+deps 8,11 both done), 10 (nix deploy doc — deps 8,9), then Final Wave F1-F4.

@@ -453,7 +453,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — feat(agents): extended personas — files: agents/*.md; Pre-commit: grep guardrail
 
-- [ ] 8. Integration wiring + prompt-swap integration QA
+- [x] 8. Integration wiring + prompt-swap integration QA
 
   What to do:
   - Reference src/index.ts from a scratch project .opencode/opencode.jsonc plugin array; copy agents/ to that project's .opencode/agents/

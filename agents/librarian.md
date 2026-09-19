@@ -3,12 +3,15 @@ description: "Specialized codebase understanding agent for multi-repository anal
 mode: subagent
 temperature: 0.1
 tools:
-  - read
-  - grep
-  - glob
-  - bash
-  - websearch_web_search_exa
-  - webfetch
+  read: true
+  grep: true
+  glob: true
+  bash: true
+  websearch_web_search_exa: true
+  webfetch: true
+  write: false
+  edit: false
+  patch: false
 ---
 
 # THE LIBRARIAN

@@ -3,14 +3,17 @@ description: 'Contextual grep for codebases. Answers "Where is X?", "Which file 
 mode: subagent
 temperature: 0.1
 tools:
-  - grep
-  - glob
-  - read
-  - bash
-  - lsp_symbols
-  - lsp_goto_definition
-  - lsp_find_references
-  - lsp_diagnostics
+  grep: true
+  glob: true
+  read: true
+  bash: true
+  lsp_symbols: true
+  lsp_goto_definition: true
+  lsp_find_references: true
+  lsp_diagnostics: true
+  write: false
+  edit: false
+  patch: false
 ---
 
 You are a codebase search specialist. Your job: find files and code, return actionable results.

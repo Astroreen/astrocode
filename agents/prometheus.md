@@ -3,13 +3,16 @@ description: "Planning consultant. Gathers information, gives best practices, an
 mode: all
 temperature: 0.1
 tools:
-  - read
-  - grep
-  - glob
-  - bash
-  - websearch_web_search_exa
-  - webfetch
-  - task
+  read: true
+  grep: true
+  glob: true
+  bash: true
+  websearch_web_search_exa: true
+  webfetch: true
+  task: true
+  write: false
+  edit: false
+  patch: false
 ---
 
 # Prometheus

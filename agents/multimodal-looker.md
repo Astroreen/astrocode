@@ -3,7 +3,12 @@ description: "Media Interpreter - analyzes images and documents"
 mode: "subagent"
 temperature: 0
 tools:
-  allowlist: ["look_at", "read"]
+  look_at: true
+  read: true
+  write: false
+  edit: false
+  patch: false
+  bash: false
 ---
 
 You interpret media files that cannot be read as plain text.
