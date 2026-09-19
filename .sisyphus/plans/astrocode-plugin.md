@@ -537,7 +537,7 @@ Critical Path: T0 -> T1 -> T2 -> T5 -> T8 -> T10 -> F1-F4 -> user okay
 
   Commit: YES — docs(deploy): finalize nix wiring guidance — files: README.md; Pre-commit: none
 
-- [ ] 11. SPIKE — model-fallback feasibility via plugin hooks
+- [x] 11. SPIKE — model-fallback feasibility via plugin hooks
 
   What to do:
   - Re-verify the full @opencode-ai/plugin Hooks surface (~/.cache/opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts): event, config, experimental.chat.messages.transform, experimental.chat.system.transform, experimental.session.compacting, experimental.text.complete. Grep specifically for any error/retry/onError-shaped field that may have been missed.

@@ -90,3 +90,40 @@ protocol for this one task. Verified same as any subagent output would be (tests
 - Verify: `bun test` -> 34 pass/0 fail (full suite, no regressions); `bunx tsc --noEmit` -> clean;
   lsp_diagnostics on both new files -> no diagnostics.
 - Commit pending: feat(plugin): model-aware system.transform + chat.params.
+
+## [2026-09-19T11:05Z] Task: 11 SPIKE model-fallback feasibility (done, direct implementation)
+NOTE: task()/delegation still unavailable this session — implemented directly again (same
+deviation as Task 5, per user's direct confirmation).
+
+Wrote docs/fallback-spike-findings.md. Key findings:
+- Re-enumerated FULL @opencode-ai/plugin Hooks interface (14 hooks) — confirmed EXHAUSTIVELY
+  no error/retry-shaped hook exists anywhere, and no hook exposes `model` as a settable output
+  field. A genuine plugin-hook retry-with-different-model mechanism is impossible.
+- Re-fetched https://opencode.ai/config.json fresh (HTTP 200) — 0 matches for
+  fallback/retry/onError, re-confirming no native fallback field.
+- NEW discovery: `$defs.ProviderConfig.properties.models.<id>.properties.options` and
+  `$defs.AgentConfig.properties.options` are both untyped `{type:"object"}` passthrough bags in
+  the OFFICIAL schema (unlike the provider-level `options` which is strongly typed). Hypothesis
+  (UNVERIFIED, no source access to closed-source Go core): these may forward verbatim into the
+  underlying AI-SDK provider call, meaning a user could set `options: {models:[...]}` on an
+  openrouter model entry to get OpenRouter's own native model-array fallback with ZERO plugin
+  code. Flagged as a recommended empirical follow-up (e.g. during Task 8 QA), not verified here.
+- OMO's own oh-my-opencode.schema.json model_fallback/fallback_models/runtime_fallback keys
+  reviewed for shape reference only (not copied) — confirmed OMO's runtime retry-on-error must
+  live inside its own custom orchestration runtime since the public Hooks surface can't support
+  it, reinforcing that a thin plugin structurally can't replicate that behavior.
+- OpenRouter's own `models:[...]` request-body fallback documented
+  (https://openrouter.ai/docs/guides/routing/model-fallbacks, fetched fresh) as the practical
+  provider-level alternative, independent of opencode's hook gap.
+- Verdict: PARTIAL (NO for plugin-hook interception; PARTIAL/unverified for options-passthrough
+  as a no-plugin-needed path). Documented `getFallbackModel(family): string` contract signature
+  only (not implemented) plus a concrete opencode.jsonc recommendation snippet with caveats.
+- Verify: `test -f docs/fallback-spike-findings.md` OK; `grep -E "Verdict: \*\*(YES|NO|PARTIAL)\*\*"`
+  found "PARTIAL"; `grep -riE "getFallbackModel|fallback_models|model_fallback" src/` -> 0
+  matches (guardrail clean, src/ untouched); `bun test` -> 34 pass/0 fail (no regressions,
+  docs-only task); `bunx tsc --noEmit` -> clean.
+- Commit pending: docs(spike): model-fallback feasibility investigation.
+
+Plan state after this task: 9/16 top-level tasks complete (0,1,2,3,4,5,6,7,11). Remaining:
+8 (integration wiring + real opencode session QA), 9 (README — deps 8,11 now both satisfiable),
+10 (nix deploy doc — deps 8,9), then Final Wave F1-F4.
