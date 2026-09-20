@@ -3,33 +3,137 @@
 Minimal, stable, model-aware opencode plugin + agent personas.
 
 A deliberately small alternative to `oh-my-openagent`/`oh-my-opencode`. It keeps the parts
-that matter — custom agent personas and model-aware defensive prompting — and drops the
-fragile heavy machinery (parallel/background orchestration, circuit-breakers, tmux, etc.).
+that matter — custom agent personas, model-aware defensive prompting, and the dynamic
+per-model prompt engine — and drops the fragile heavy machinery (team-mode,
+parallel/background orchestration, tmux, git_master, browser_automation, categories).
 
 ## Status
 
-Implemented and verified: plugin (`src/index.ts`), model router
-(`src/models/resolveFamily.ts`), guards + dump side-channel (`src/prompts/*.ts`), all 11
-persona `.md` files (`agents/`), `bun test` suite (34 tests), and a real-opencode-session
-integration QA pass (see `docs/spike-findings.md`, `docs/fallback-spike-findings.md`,
-`.sisyphus/evidence/task-8-*.json`).
+Implemented and verified (`bun test`: 66 tests pass, `tsc --noEmit`: 0 errors):
+
+- plugin entry (`src/index.ts`) — guards, Sisyphus dynamic-prompt dispatch, sampling,
+  builtin-command injection, runtime model fallback
+- model router (`src/models/resolveFamily.ts`) — 7 families
+- guards + dump side-channel (`src/prompts/*.ts`)
+- dynamic Sisyphus prompt engine (`src/prompts/sisyphus/**`, `src/agents/metadata.ts`)
+- agent personas (`agents/*.md`, 11 shipped + `plan`/`build` overrides)
+- runtime model fallback (`src/fallback/**`)
+- 7 builtin commands (`src/commands/index.ts`)
 
 ## Architecture
 
 **Hybrid design:**
-- **Agent personas** ship as native opencode `.md` files (`agents/`). Stable: they work even if
-  the experimental plugin hook changes or breaks on an opencode upgrade.
-- **A thin plugin** (`src/index.ts`) adds the *dynamic* layer only: it appends model-family-specific
-  defensive guard text via `experimental.chat.system.transform` and tunes sampling via `chat.params`.
-  Both hooks mutate `output` in place (append-only — never wipes the base prompt or persona body
-  opencode has already filled in) and are wrapped defensively: if the plugin-hook input/output
-  shape ever changes, they log and no-op instead of crashing your session.
 
-**Model families** (`src/models/resolveFamily.ts`): `claude` | `cheap-openrouter` | `fallback`.
-Weak/cheap models (Deepseek, GLM, Kimi, Qwen, Minimax, Yi, Zhipu on OpenRouter) get more
-defensive guards (`src/prompts/guards.ts`: an anti-tool-loop guard + explicit apply-patch
-guidance, copied verbatim from oh-my-openagent's empirically-tuned text); Claude gets none;
-any unrecognized/unknown model falls back to the most defensive guard set.
+- **Agent personas** ship as native opencode `.md` files (`agents/`). Stable: they work even
+  if the experimental plugin hook changes or breaks on an opencode upgrade.
+- **A thin plugin** (`src/index.ts`) adds the *dynamic* layer: model-family guard text,
+  family-specific Sisyphus prompt generation, sampling tweaks, builtin-command injection, and
+  automatic model fallback. Every hook mutates `output` in place (append-only — never wipes the
+  base prompt or persona body opencode has already filled in) and is wrapped defensively: if a
+  hook input/output shape ever changes, it logs and no-ops instead of crashing the session.
+
+### Model families
+
+`src/models/resolveFamily.ts` returns one of seven families by `modelID` substring (no provider
+gate):
+
+`claude` | `gpt` | `gemini` | `kimi` | `glm` | `openrouter-generic` | `fallback`
+
+`claude` gets no extra guards; the other six get an anti-tool-loop guard + apply-patch guidance
+(copied verbatim from oh-my-openagent's empirically-tuned text). `kimi`/`glm`/`openrouter-generic`
+additionally get a sampling override (`temperature=0.3`, `topP=0.9`) via `isCheapSamplingFamily`.
+
+### Dynamic Sisyphus prompt engine
+
+This is the biggest feature and the closest thing to oh-my-openagent's core value. When the
+active persona is Sisyphus, the plugin generates a family-specific behavioral prompt at runtime
+and appends it to the system prompt. It is *not* a static string: the agent-facing sections
+(Key Triggers, Agent Selection Table, Delegation Triggers, Explore/Librarian/Oracle usage) are
+built live from `src/agents/metadata.ts`, so they stay accurate as the agent roster evolves.
+
+- **Detection**: `experimental.chat.system.transform` has no `agent` field, so Sisyphus is
+  detected by scanning `output.system` for the marker `"You are Sisyphus - the Master
+  Orchestrator."` (`src/prompts/sisyphus/dispatch.ts`).
+- **Shared skeleton**: `src/prompts/sisyphus/sections.ts` — family-agnostic section builders.
+- **Family builders**: `src/prompts/sisyphus/families/{claude,gpt,glm,kimi,fallback,gemini}.ts`.
+  Gemini is not a standalone persona: it reuses the fallback prompt plus Gemini-specific
+  override blocks.
+- **Option C hybrid** (see `docs/porting-plan.md`): `agents/sisyphus.md` stays as the static
+  baseline persona; the plugin only appends the runtime-computed delta.
+
+### Runtime model fallback
+
+`src/fallback/` implements real mid-task model switching. On a retryable `session.error`
+(rate limit, quota, 5xx, overloaded, …), the plugin resubmits the last user turn on the same
+session with the next configured fallback model — full conversation history is preserved
+server-side by opencode, so the new model continues rather than restarting. See
+`docs/porting-plan.md` § "Fallback module design".
+
+astrocode keeps its settings in its **own config file**, `astrocode.jsonc`, which the plugin
+loads itself (searched in the project root and `.opencode/`) — you do not need to put anything
+astrocode-specific in `opencode.jsonc`:
+
+```jsonc
+// astrocode.jsonc
+{
+  "agents": {
+    // Optional per-agent default model + its own fallback chain + color.
+    "sisyphus": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#00CED1"
+    },
+    "oracle": {
+      "model": "anthropic/claude-opus-4-6",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"]
+    }
+  },
+  "fallback": {
+    "enabled": true,
+    "retry_on_errors": [429, 500, 502, 503, 504],
+    "max_attempts": 3,
+    "cooldown_seconds": 60,
+    // Global chain, used by every agent without its own fallback_models.
+    "models": ["openrouter/~deepseek/deepseek-flash-latest"]
+  }
+}
+```
+
+A per-agent `fallback_models` list fully replaces the global chain for that agent (no merge).
+Inline plugin options (the second tuple element in `opencode.jsonc`) are still honored and
+override the file.
+
+Why fallback fires: on a retryable provider error (rate limit, quota, usage limit, credits,
+5xx, overloaded), astrocode resubmits the last user turn on the same session with the next
+chain model. opencode surfaces such failures as `session.error` **or** as a `message.updated`
+on an errored assistant message; astrocode handles both.
+
+### Builtin commands
+
+`src/commands/index.ts` ports oh-my-openagent's 7 builtin commands, adapted to astrocode's real
+tool surface and injected via the plugin's `config` hook (existing user commands with the same
+name win):
+
+`/goal`, `/refactor`, `/start-work`, `/stop-continuation`, `/remove-ai-slops`, `/handoff`,
+`/hyperplan`.
+
+Team-mode / Codex-harness sections are preserved as HTML comments (never deleted), per
+`docs/porting-plan.md` decision #2. `/hyperplan` runs a single-agent adversarial fallback since
+team-mode is not implemented.
+
+### Agent roster, colors, and `plan` / `build` overrides
+
+The plugin **owns the agent roster**: at startup it reads the shipped `agents/*.md` and injects
+them via the `config` hook, so a project needs only the plugin entry — there is no copying or
+symlinking personas into `.opencode/agents/`. Every agent gets a distinct color (oh-my style,
+see `DEFAULT_COLORS` in `src/agents/personas.ts`), overridable per agent in `astrocode.jsonc`.
+
+opencode's builtin primary agents are replaced:
+
+- `build` → the **Sisyphus** orchestrator persona (default primary agent)
+- `plan` → the **Prometheus** planner persona (read-only; writes plans to `.sisyphus/plans/`)
+
+Because `build` carries the Sisyphus marker, it also receives the dynamic prompt engine.
 
 ## Why not just use oh-my-openagent?
 
@@ -50,46 +154,18 @@ Enabled **per-project**, never globally (do NOT add this to the global
    }
    ```
    opencode runs plugin TypeScript entries directly via Bun — no build step required.
-2. Make `agents/*.md` available to that project, either:
-   - copied to the project's `.opencode/agents/`, or
-   - copied to `~/.config/opencode/agents/` to make them available to every project (personas
-     are model-agnostic — the plugin adds guard text at runtime, so sharing them globally is
-     safe even though the plugin itself stays per-project).
+2. That's it — the plugin injects its own personas and commands. Optionally add
+   `astrocode.jsonc` (see above) for per-agent models, fallback chains, and colors.
+
+### `/start-work` switches to Atlas
+
+The builtin `/start-work` command is injected with `agent: "atlas"` and `subtask: false`, so it
+switches the session to the **atlas** orchestrator (rather than running as a subagent).
 
 ### Per-agent model override
 
-Each persona `.md` file's YAML frontmatter supports an optional `model:` field
-(`$defs.AgentConfig.model` in the [official config schema](https://opencode.ai/config.json)),
-e.g. `model: anthropic/claude-sonnet-4-6`. If omitted, the agent uses whatever model the calling
-session/`opencode.jsonc` has configured. This is independent of the plugin — it works with or
-without astrocode installed.
-
-### Model-availability fallback (rate-limited / down / moderation-refused)
-
-See `docs/fallback-spike-findings.md` for the full investigation. Summary — **Feasibility:
-PARTIAL**:
-- A plugin-hook-based automatic retry (detect model X failed, resubmit to model Y) is **not
-  possible**: the `@opencode-ai/plugin` Hooks surface has no error/retry hook and no hook
-  exposes `model` as a settable field.
-- The **recommended practical path** is OpenRouter's own native `models: [...]` fallback array,
-  configured directly in `opencode.jsonc` (no plugin code needed) — *unverified in this
-  investigation whether opencode forwards the `options` field through to the request verbatim;
-  test empirically before relying on it in production*:
-  ```jsonc
-  {
-    "provider": {
-      "openrouter": {
-        "models": {
-          "deepseek/deepseek-chat": {
-            "options": { "models": ["z-ai/glm-4.6", "qwen/qwen-2.5-72b-instruct"] }
-          }
-        }
-      }
-    }
-  }
-  ```
-- If that passthrough doesn't work, the only remaining lever is manually rotating the `model:`
-  string per-agent when a provider is degraded.
+Set `agents.<name>.model` in `astrocode.jsonc` (see the config example above). If omitted, the
+agent uses whatever model the calling session/`opencode.jsonc` has configured.
 
 ### Environment variables
 
@@ -105,13 +181,13 @@ PARTIAL**:
 opencode plugin hooks — the API surface can change between opencode releases without notice.
 Pin your opencode version in nix when deploying astrocode. The plugin degrades gracefully (logs
 and no-ops) rather than crashing your session if the hook input/output shape changes, but a
-shape change would silently stop guard injection until astrocode is updated to match.
+shape change would silently stop injection until astrocode is updated to match.
 
 ### NixOS deployment (meridian-pattern)
 
 astrocode is a standalone git repo, not a nix flake input — deploy it the same way as
-`meridian.ts` (`home/modules/terminal/ai/meridian.nix`): clone/install it via `home.activation`,
-then symlink/copy `agents/` into `~/.config/opencode/agents/`. Target file for this wiring:
+`meridian.ts` (`home/modules/terminal/ai/meridian.nix`): clone/install it via `home.activation`.
+No agent copying is needed — the plugin injects its own personas. Target file for this wiring:
 `home/modules/terminal/ai/astrocode.nix`, imported alongside the existing `meridian.nix` import.
 
 Example snippet (adapt paths/repo URL to match your actual `meridian.nix` conventions):
@@ -128,8 +204,6 @@ Example snippet (adapt paths/repo URL to match your actual `meridian.nix` conven
     else
       $DRY_RUN_CMD ${pkgs.git}/bin/git -C "$ASTROCODE_DIR" pull --ff-only
     fi
-    $DRY_RUN_CMD mkdir -p "$HOME/.config/opencode/agents"
-    $DRY_RUN_CMD cp -f "$ASTROCODE_DIR"/agents/*.md "$HOME/.config/opencode/agents/"
   '';
 }
 ```
@@ -137,27 +211,35 @@ Example snippet (adapt paths/repo URL to match your actual `meridian.nix` conven
 Then, per-project, add the plugin entry (§ Deployment above) pointing at
 `$HOME/.local/share/astrocode/src/index.ts`.
 
-**Verify the wiring** with the standard home-manager dry-run before applying, on the machine
-where you build your home configuration (referred to as the "home build laptop" in this repo's
-planning docs) — e.g. `home-manager build --dry-run` (or your flake's equivalent, such as
+**Verify the wiring** with the standard home-manager dry-run before applying on the build
+machine — e.g. `home-manager build --dry-run` (or your flake's equivalent, such as
 `nix build .#homeConfigurations.<name>.activationPackage`) — before running the real
-`home-manager switch` / `home build laptop` activation.
+`home-manager switch` activation.
 
 ## Dev
 
 ```bash
 bun install
-bun test                 # 34 tests, all pass
-bunx tsc --noEmit         # 0 errors
+bun test                 # 77 tests, all pass
+bun run tsc --noEmit     # 0 errors
 ```
 
 ## Repo layout
 
-- `src/index.ts` — plugin entry (`experimental.chat.system.transform` + `chat.params`)
-- `src/models/resolveFamily.ts` — model -> family router
+- `src/index.ts` — plugin entry (system transform, chat.params, config, event, dispose)
+- `src/models/resolveFamily.ts` — model -> family router (7 families)
 - `src/prompts/guards.ts` — verbatim defensive guard strings
 - `src/prompts/dump.ts` — `ASTROCODE_DUMP` debug side-channel
-- `agents/*.md` — native persona definitions
+- `src/prompts/sisyphus/` — dynamic prompt engine (`sections.ts`, `dispatch.ts`, `families/`)
+- `src/agents/personas.ts` — reads `agents/*.md`, injects the agent roster + colors + native
+  `build`/`plan` overrides
+- `src/config/astrocode.ts` — loads the dedicated `astrocode.jsonc` (JSONC-aware)
+- `src/agents/metadata.ts` — agent behavioral metadata driving the dynamic sections
+- `src/fallback/` — runtime model fallback (config, classify, state, orchestrator)
+- `src/commands/index.ts` — 7 ported builtin commands
+- `agents/*.md` — native persona definitions (plugin-injected)
 - `test/*.test.ts` — bun test suite
-- `docs/spike-findings.md` — hook-semantics investigation (Task 2)
-- `docs/fallback-spike-findings.md` — model-fallback feasibility investigation (Task 11)
+- `docs/porting-plan.md` — authoritative porting plan + locked decisions
+- `docs/spike-findings.md` — hook-semantics investigation
+- `docs/fallback-spike-findings.md` — early fallback feasibility investigation (superseded —
+  see `docs/porting-plan.md` "Fallback module design")

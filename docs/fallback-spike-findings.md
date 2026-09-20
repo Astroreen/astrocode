@@ -1,5 +1,14 @@
 # SPIKE — Model-Fallback Feasibility (Task 11)
 
+> **SUPERSEDED (2026-09): the "not possible" conclusion below is WRONG.** The plugin *can*
+> implement real mid-task failover. The mechanism actually used (see `docs/porting-plan.md`
+> § "Fallback module design" and the shipped `src/fallback/` module): the `event` hook fires on
+> `session.error`, a retryable error is classified, and `client.session.prompt(...)` resubmits
+> the last user turn on the **same session** with a different model — opencode preserves the
+> full conversation history server-side, so work continues instead of restarting. The
+> OpenRouter `options.models` passthrough hack described later in this file was never needed.
+> Read the rest of this document as historical investigation only.
+
 > Scope: this document investigates **model-availability failover** — what happens (or could
 > happen) when a specific model/provider is down, rate-limited, or refuses a request, and
 > whether astrocode's plugin can automatically retry with a different model.
