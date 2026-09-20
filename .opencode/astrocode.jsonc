@@ -1,0 +1,32 @@
+{
+  // astrocode's OWN config file (the plugin reads this itself — see
+  // src/config/astrocode.ts). Nothing astrocode-specific needs to go in
+  // .opencode/opencode.jsonc anymore.
+  "agents": {
+    // Example: give an agent an explicit default model + its own fallback chain.
+    // Agents without an entry inherit the session model and use the global
+    // `fallback.models` chain below.
+    "sisyphus": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#00CED1"
+    },
+    "build": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"]
+    },
+    "plan": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"]
+    }
+  },
+  "fallback": {
+    "enabled": true,
+    "retry_on_errors": [429, 500, 502, 503, 504],
+    "max_attempts": 3,
+    "cooldown_seconds": 60,
+    // Global fallback chain: used by every agent that has no per-agent
+    // fallback_models entry.
+    "models": ["openrouter/~deepseek/deepseek-flash-latest"]
+  }
+}

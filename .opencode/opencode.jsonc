@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // astrocode owns its own agents, commands, and fallback config — see
+  // .opencode/astrocode.jsonc. Only the plugin entry belongs here.
+  "plugin": ["/home/astroreen/Documents/opencode/astrocode/src/index.ts"]
+}
