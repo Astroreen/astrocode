@@ -4,6 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APPLY_PATCH_GUIDANCE, TOOL_LOOP_GUARD, getGuards } from "../src/prompts/guards";
 import { dumpPrompt } from "../src/prompts/dump";
+import type { ModelFamily } from "../src/models/resolveFamily";
+
+const NON_CLAUDE_FAMILIES: ModelFamily[] = [
+  "gpt",
+  "gemini",
+  "kimi",
+  "glm",
+  "openrouter-generic",
+  "fallback",
+];
 
 describe("getGuards family mapping", () => {
   test("claude -> empty array", () => {
@@ -11,21 +21,22 @@ describe("getGuards family mapping", () => {
     expect(getGuards("claude").length).toBe(0);
   });
 
-  test("cheap-openrouter contains anti-tool-loop guard text", () => {
-    const g = getGuards("cheap-openrouter");
-    expect(g.length).toBeGreaterThan(0);
-    expect(
-      g.some((s) => s.includes("Never call the same tool with the same arguments more than twice in a row")),
-    ).toBe(true);
-    expect(g).toContain(TOOL_LOOP_GUARD);
-    expect(g).toContain(APPLY_PATCH_GUIDANCE);
-  });
+  test.each(NON_CLAUDE_FAMILIES)(
+    "%s contains anti-tool-loop guard text",
+    (family) => {
+      const g = getGuards(family);
+      expect(g.length).toBeGreaterThan(0);
+      expect(
+        g.some((s) => s.includes("Never call the same tool with the same arguments more than twice in a row")),
+      ).toBe(true);
+      expect(g).toContain(TOOL_LOOP_GUARD);
+      expect(g).toContain(APPLY_PATCH_GUIDANCE);
+    },
+  );
 
-  test("fallback is a superset of cheap-openrouter (length >= and contains all)", () => {
-    const cheap = getGuards("cheap-openrouter");
-    const fallback = getGuards("fallback");
-    expect(fallback.length).toBeGreaterThanOrEqual(cheap.length);
-    for (const guard of cheap) expect(fallback).toContain(guard);
+  test("all non-claude families return identical guard sets", () => {
+    const sets = NON_CLAUDE_FAMILIES.map((f) => getGuards(f));
+    for (const s of sets) expect(s).toEqual(sets[0]);
   });
 
   test("idempotent: repeated calls return equal, mutation-isolated arrays", () => {

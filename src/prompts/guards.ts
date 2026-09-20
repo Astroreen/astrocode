@@ -3,7 +3,11 @@
 //   TOOL_LOOP_GUARD      <- KIMI_TOOL_LOOP_GUARD     @ line 155666
 //   APPLY_PATCH_GUIDANCE <- GPT_APPLY_PATCH_GUIDANCE @ line 154850
 
-export type ModelFamily = "claude" | "cheap-openrouter" | "fallback";
+// ModelFamily lives in ./models/resolveFamily (single source of truth) —
+// this module used to declare its own divergent 3-value copy of the type;
+// that copy is gone now that resolveFamily.ts owns the full 7-value taxonomy.
+import type { ModelFamily } from "../models/resolveFamily";
+export type { ModelFamily };
 
 export const TOOL_LOOP_GUARD = `<tool_loop_guard>
 Never call the same tool with the same arguments more than twice in a row.
@@ -18,8 +22,11 @@ export function getGuards(family: ModelFamily): string[] {
   switch (family) {
     case "claude":
       return [];
-    case "cheap-openrouter":
-      return [TOOL_LOOP_GUARD, APPLY_PATCH_GUIDANCE];
+    case "gpt":
+    case "gemini":
+    case "kimi":
+    case "glm":
+    case "openrouter-generic":
     case "fallback":
     default:
       return [TOOL_LOOP_GUARD, APPLY_PATCH_GUIDANCE];
