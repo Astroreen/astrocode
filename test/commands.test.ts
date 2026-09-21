@@ -30,9 +30,10 @@ describe("buildBuiltinCommands", () => {
     expect(commands.refactor.template).toContain("$ARGUMENTS");
   });
 
-  test("start-work runs in the atlas agent", () => {
+  test("start-work runs in the Atlas display-named agent", () => {
     const commands = buildBuiltinCommands();
-    expect(commands["start-work"].agent).toBe("atlas");
+    expect(commands["start-work"].agent).toBe("Atlas - Plan Executor");
+    expect(commands["start-work"].subtask).toBe(false);
   });
 
   test("no oh-my-openagent-only tool syntax leaked into executable template text", () => {

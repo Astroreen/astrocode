@@ -22,6 +22,12 @@ export interface BuiltinCommandDefinition {
   subtask?: boolean;
 }
 
+import { getAgentDisplayName } from "../agents/personas";
+
+const PROMETHEUS = getAgentDisplayName("prometheus");
+const HEPHAESTUS = getAgentDisplayName("hephaestus");
+const ATLAS = getAgentDisplayName("atlas");
+
 const HEADER = `<!--` + ` astrocode builtin command (ported from oh-my-openagent)` + ` -->`;
 
 export const GOAL_TEMPLATE = `${HEADER}
@@ -489,7 +495,7 @@ step, and explicit regression indicators. Mark phase-3 completed.
 Mark phase-4 in_progress. Delegate to astrocode's planner:
 
 \`\`\`
-task(subagent_type="prometheus", description="Refactor plan", prompt="Create a detailed
+task(subagent_type="${PROMETHEUS}", description="Refactor plan", prompt="Create a detailed
 refactoring plan.
 
 ## Refactoring Goal
@@ -597,7 +603,7 @@ Always preview first, review, then execute.
 
 ## Agents
 - \`explore\`: codebase pattern discovery
-- \`prometheus\`: detailed refactoring plan generation
+- \`${PROMETHEUS}\`: detailed refactoring plan generation
 - \`oracle\`: read-only consultation for complex architectural decisions and debugging
 - \`librarian\`: use proactively for deprecated methods or library migration; query official docs
   and OSS examples for modern replacements
@@ -662,7 +668,7 @@ For each changed file, delegate the removal with the real task tool, naming the 
 prompt's CONTEXT so the subagent loads it itself:
 
 \`\`\`
-task(subagent_type="hephaestus", description="Remove AI slops from {filename}", prompt="CONTEXT:
+task(subagent_type="${HEPHAESTUS}", description="Remove AI slops from {filename}", prompt="CONTEXT:
 load the remove-ai-slops skill via the skill tool before starting. GOAL: remove AI-generated
 slops from this file while preserving behavior. FILE: {file_path}")
 \`\`\`
@@ -765,7 +771,7 @@ Team-mode is not available in astrocode, so run a single-agent adversarial plann
    blast radius, reversibility, cost).
 3. Produce 2-3 competing plans, each with trade-offs.
 4. Consult \`oracle\` (read-only, expensive) for the hardest architectural risks.
-5. Have \`prometheus\` write the chosen plan to \`.sisyphus/plans/\`.
+5. Have \`${PROMETHEUS}\` write the chosen plan to \`.sisyphus/plans/\`.
 6. Summarize the decision, rejected alternatives, and open risks.
 
 <user-request>
@@ -786,7 +792,7 @@ export function buildBuiltinCommands(): Record<string, BuiltinCommandDefinition>
     },
     "start-work": {
       description: "(builtin) Start an Atlas work session from a Prometheus plan",
-      agent: "atlas",
+      agent: ATLAS,
       subtask: false,
       template: START_WORK_TEMPLATE,
     },
