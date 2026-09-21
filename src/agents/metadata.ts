@@ -106,7 +106,7 @@ export const AGENT_METADATA: Record<string, AgentMetadata> = {
     ],
   },
   prometheus: {
-    name: "prometheus",
+    name: "Prometheus - Plan Builder",
     role: "Planning consultant - writes decision-complete work plans, never implements",
     cost: "CHEAP",
     triggers: [
@@ -118,7 +118,7 @@ export const AGENT_METADATA: Record<string, AgentMetadata> = {
     ],
   },
   hephaestus: {
-    name: "hephaestus",
+    name: "Hephaestus - Deep Agent",
     role: "Autonomous deep worker for complex, open-ended implementation tasks",
     cost: "EXPENSIVE",
     triggers: [
@@ -130,7 +130,7 @@ export const AGENT_METADATA: Record<string, AgentMetadata> = {
     ],
   },
   "sisyphus-junior": {
-    name: "sisyphus-junior",
+    name: "Sisyphus-Junior",
     role: "Focused task executor for direct, well-scoped implementation",
     cost: "CHEAP",
     triggers: [
@@ -142,7 +142,7 @@ export const AGENT_METADATA: Record<string, AgentMetadata> = {
     ],
   },
   metis: {
-    name: "metis",
+    name: "Metis - Plan Consultant",
     role: "Pre-planning consultant - analyzes intent and risk before a plan is written",
     cost: "CHEAP",
     triggers: [
@@ -154,7 +154,7 @@ export const AGENT_METADATA: Record<string, AgentMetadata> = {
     ],
   },
   momus: {
-    name: "momus",
+    name: "Momus - Plan Critic",
     role: "Plan reviewer - verifies a written plan is executable and well-referenced",
     cost: "CHEAP",
     triggers: [

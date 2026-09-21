@@ -124,7 +124,9 @@ If you delegated a search or investigation to \`explore\` or \`librarian\`, do N
  */
 export function buildSkillsGuidance(): string {
   return `### Skills (check before delegating)
-Before delegating non-trivial work, check the \`skill\` tool for one matching the task's domain. If one exists, name it explicitly in the delegation prompt's CONTEXT so the subagent loads it itself via its own \`skill\` tool call before starting. Cost of loading an irrelevant skill is near zero; cost of missing a relevant one is high.`;
+Before delegating non-trivial work, check the \`skill\` tool for one matching the task's domain. If one exists, name it explicitly in the delegation prompt's CONTEXT so the subagent loads it itself via its own \`skill\` tool call before starting. Cost of loading an irrelevant skill is near zero; cost of missing a relevant one is high.
+
+User-authored and project skills take priority over any built-in defaults: when several skills could apply, prefer the one from the user/project skill directories. Never assume a domain has no skill — list the available skills before concluding that.`;
 }
 
 /**

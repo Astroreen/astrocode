@@ -3,10 +3,14 @@ import { join } from "node:path";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_DISPLAY_NAMES,
+  DEFAULT_AGENT,
   DEFAULT_COLORS,
-  buildNativeOverrides,
+  DEMOTED_NATIVE_AGENTS,
+  getAgentDisplayName,
   loadPersonas,
   parsePersonaMarkdown,
+  toAgentConfigs,
 } from "../src/agents/personas";
 
 const AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
@@ -63,24 +67,52 @@ describe("loadPersonas", () => {
   });
 });
 
-describe("buildNativeOverrides", () => {
-  test("build uses the Sisyphus persona and plan uses the Prometheus persona", () => {
-    const base = loadPersonas(AGENTS_DIR);
-    const overrides = buildNativeOverrides(base);
-
-    expect(overrides.build.prompt).toBe(base.sisyphus.prompt);
-    expect(overrides.plan.prompt).toBe(base.prometheus.prompt);
-    expect(overrides.build.mode).toBe("primary");
-    expect(overrides.plan.mode).toBe("primary");
-    expect(overrides.plan.permission?.edit).toBe("deny");
-    expect(overrides.build.color).toBe(DEFAULT_COLORS.build);
+describe("oh-my display names", () => {
+  test("maps agent keys to the exact oh-my-openagent display names", () => {
+    expect(getAgentDisplayName("sisyphus")).toBe("Sisyphus - ultraworker");
+    expect(getAgentDisplayName("hephaestus")).toBe("Hephaestus - Deep Agent");
+    expect(getAgentDisplayName("prometheus")).toBe("Prometheus - Plan Builder");
+    expect(getAgentDisplayName("atlas")).toBe("Atlas - Plan Executor");
+    expect(getAgentDisplayName("sisyphus-junior")).toBe("Sisyphus-Junior");
+    expect(getAgentDisplayName("metis")).toBe("Metis - Plan Consultant");
+    expect(getAgentDisplayName("momus")).toBe("Momus - Plan Critic");
+    expect(getAgentDisplayName("oracle")).toBe("oracle");
+    expect(getAgentDisplayName("explore")).toBe("explore");
+    expect(getAgentDisplayName("unknown-agent")).toBe("unknown-agent");
   });
 
-  test("every default color is distinct except the native aliases", () => {
-    const aliases = new Set(["build", "plan"]);
-    const colors = Object.entries(DEFAULT_COLORS).filter(
-      ([name]) => !aliases.has(name),
+  test("default agent is the Sisyphus display name (replaces build)", () => {
+    expect(DEFAULT_AGENT).toBe(AGENT_DISPLAY_NAMES.sisyphus);
+    expect(DEFAULT_AGENT).toBe("Sisyphus - ultraworker");
+  });
+
+  test("build and plan are demoted native agents", () => {
+    expect([...DEMOTED_NATIVE_AGENTS]).toEqual(["build", "plan"]);
+  });
+});
+
+describe("toAgentConfigs", () => {
+  test("keys agents by display name and applies per-agent settings", () => {
+    const base = loadPersonas(AGENTS_DIR);
+    const configs = toAgentConfigs(base, (key) =>
+      key === "sisyphus"
+        ? { model: "anthropic/claude-sonnet-4-6", color: "#000000" }
+        : undefined,
     );
+    expect(Object.keys(configs)).toContain("Sisyphus - ultraworker");
+    expect(Object.keys(configs)).toContain("Prometheus - Plan Builder");
+    expect(configs["Sisyphus - ultraworker"].model).toBe(
+      "anthropic/claude-sonnet-4-6",
+    );
+    expect(configs["Sisyphus - ultraworker"].color).toBe("#000000");
+    expect(configs["Sisyphus - ultraworker"].prompt).toBe(base.sisyphus.prompt);
+    expect(configs.oracle.color).toBe(DEFAULT_COLORS.oracle);
+  });
+});
+
+describe("DEFAULT_COLORS", () => {
+  test("every default color is distinct", () => {
+    const colors = Object.entries(DEFAULT_COLORS);
     const unique = new Set(colors.map(([, color]) => color));
     expect(unique.size).toBe(colors.length);
   });

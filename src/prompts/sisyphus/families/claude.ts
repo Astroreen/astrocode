@@ -307,7 +307,7 @@ Use \`task_id\` for: failed/incomplete work, follow-up questions, multi-turn ref
 
 \`\`\`
 // WRONG: starting fresh loses everything
-task(subagent_type="sisyphus-junior", prompt="Fix the type error in auth.ts...")
+task(subagent_type="Sisyphus-Junior", prompt="Fix the type error in auth.ts...")
 
 // RIGHT: resume preserves full context
 task(task_id="<id from the earlier call>", prompt="Fix: Type error on line 42")

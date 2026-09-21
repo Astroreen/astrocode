@@ -41,10 +41,54 @@ export const DEFAULT_COLORS: Record<string, string> = {
   metis: "#F1C40F",
   momus: "#E67E22",
   "multimodal-looker": "#E91E63",
-  // native overrides
-  build: "#00CED1",
-  plan: "#9B59B6",
 };
+
+// Display names, copied from oh-my-openagent's own AGENT_DISPLAY_NAMES map
+// (dist/index.js `packages/omo-opencode/src/shared/agent-display-names.ts`).
+// Fidelity matters: astrocode registers agents under these keys so opencode's UI
+// (TAB switcher, @ menu, session header) shows exactly the names oh-my shows.
+export const AGENT_DISPLAY_NAMES: Record<string, string> = {
+  sisyphus: "Sisyphus - ultraworker",
+  hephaestus: "Hephaestus - Deep Agent",
+  prometheus: "Prometheus - Plan Builder",
+  atlas: "Atlas - Plan Executor",
+  "sisyphus-junior": "Sisyphus-Junior",
+  metis: "Metis - Plan Consultant",
+  momus: "Momus - Plan Critic",
+  oracle: "oracle",
+  librarian: "librarian",
+  explore: "explore",
+  "multimodal-looker": "multimodal-looker",
+};
+
+export function getAgentDisplayName(key: string): string {
+  const exact = AGENT_DISPLAY_NAMES[key];
+  if (exact !== undefined) return exact;
+  const lower = key.toLowerCase();
+  for (const [k, v] of Object.entries(AGENT_DISPLAY_NAMES)) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  return key;
+}
+
+// Reverse lookup: display name (or anything case-insensitively matching one) ->
+// canonical persona key. Lets config files use either name interchangeably.
+export function getAgentConfigKey(name: string): string {
+  if (AGENT_DISPLAY_NAMES[name] !== undefined) return name;
+  const lower = name.toLowerCase();
+  for (const [k, v] of Object.entries(AGENT_DISPLAY_NAMES)) {
+    if (v.toLowerCase() === lower) return k;
+  }
+  return name;
+}
+
+// The default agent oh-my sets (its `applyDefaultAgent` falls back to the
+// Sisyphus display name), which is how `build` ends up "replaced" by Sisyphus.
+export const DEFAULT_AGENT = getAgentDisplayName("sisyphus");
+
+// opencode's builtin primary agents that oh-my demotes to hidden subagents once
+// the plugin owns the roster (`build: { mode: "subagent", hidden: true }`).
+export const DEMOTED_NATIVE_AGENTS = ["build", "plan"] as const;
 
 interface ParsedFrontmatter {
   data: Record<string, unknown>;
@@ -171,50 +215,26 @@ export function loadPersonas(agentsDir: string): Record<string, PersonaDefinitio
   return out;
 }
 
-// Clone a persona under a different agent name (used for the native overrides).
-export function clonePersona(
-  source: PersonaDefinition,
-  name: string,
-  overrides: Partial<PersonaDefinition>,
-): PersonaDefinition {
-  return {
-    ...source,
-    name,
-    color: overrides.color ?? DEFAULT_COLORS[name] ?? source.color,
-    ...overrides,
-  };
-}
-
-// Apply the native build/plan overrides on top of the shipped personas.
-export function buildNativeOverrides(
+// Remap the shipped persona keys (file names) to opencode agent config entries
+// keyed by oh-my display names, with per-agent model/color overrides applied.
+export function toAgentConfigs(
   personas: Record<string, PersonaDefinition>,
-): Record<string, PersonaDefinition> {
-  const overrides: Record<string, PersonaDefinition> = {};
-
-  const sisyphus = personas.sisyphus;
-  if (sisyphus) {
-    overrides.build = clonePersona(sisyphus, "build", {
-      description:
-        "Build agent (astrocode override). Master orchestrator: delegates to specialists and verifies their work.",
-      mode: "primary",
-    });
+  settingsFor: (
+    key: string,
+    displayName: string,
+  ) => { model?: string; color?: string } | undefined,
+): Record<string, PersonaDefinition & { model?: string }> {
+  const out: Record<string, PersonaDefinition & { model?: string }> = {};
+  for (const [key, persona] of Object.entries(personas)) {
+    const displayName = getAgentDisplayName(key);
+    const settings = settingsFor(key, displayName);
+    const entry: PersonaDefinition & { model?: string } = {
+      ...persona,
+      name: displayName,
+      color: settings?.color ?? persona.color ?? DEFAULT_COLORS[key],
+    };
+    if (settings?.model) entry.model = settings.model;
+    out[displayName] = entry;
   }
-
-  const prometheus = personas.prometheus;
-  if (prometheus) {
-    overrides.plan = clonePersona(prometheus, "plan", {
-      description:
-        "Plan agent (astrocode override). Read-only planner; writes decision-complete plans to .sisyphus/plans/.",
-      mode: "primary",
-      tools: {
-        ...(prometheus.tools ?? {}),
-        write: true,
-        edit: false,
-        patch: false,
-      },
-      permission: { edit: "deny" },
-    });
-  }
-
-  return overrides;
+  return out;
 }

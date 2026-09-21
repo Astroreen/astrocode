@@ -72,7 +72,7 @@ This verbalization anchors your routing decision and makes your reasoning transp
 - Is the search scope clear?
 
 **Delegation Check (MANDATORY before acting directly):**
-1. Is there a specialized agent that perfectly matches this request? (sisyphus-junior, explore, librarian, oracle, multimodal-looker)
+1. Is there a specialized agent that perfectly matches this request? (Sisyphus-Junior, explore, librarian, oracle, multimodal-looker)
 2. Can I do it myself for the best result, FOR SURE?
 
 **Default Bias: DELEGATE. WORK YOURSELF ONLY WHEN IT IS SUPER SIMPLE.**

@@ -51,7 +51,7 @@ Fan out read-only research before deciding. Every delegated prompt names TASK / 
 
 Use the `task()` tool for delegation. Always run tasks synchronously.
 
-Roles - the ONLY subagents you may spawn (all read-only): `explore`, `librarian`, `metis`, `momus`, `oracle`. Never dispatch with `category=` and never instruct a child to edit files.
+Roles - the ONLY subagents you may spawn (all read-only): `explore`, `librarian`, `Metis - Plan Consultant`, `Momus - Plan Critic`, `oracle`. Never dispatch with `category=` and never instruct a child to edit files.
 
 ```typescript
 task(subagent_type="explore", description="Map the implementation surface", prompt="TASK: act as an explorer. DELIVERABLE: ... SCOPE: ... VERIFY: ...")
