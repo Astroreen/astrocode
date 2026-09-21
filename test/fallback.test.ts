@@ -441,15 +441,8 @@ describe("dispatchFallback", () => {
     expect(calls.promptAsync).toBe(1);
   });
 
-  test("synthetic-only history is replayed (e.g. injected background result)", async () => {
-    const { client, calls } = clientWith([
-      {
-        info: { role: "user", agent: "explore" },
-        parts: [
-          { type: "text", text: "Background task completed: do the thing", synthetic: true },
-        ],
-      },
-    ]);
+  test("resubmits only the synthetic note, not the user text (no duplicate prompt)", async () => {
+    const { client, calls } = clientWith([userMessage]);
     const config = parseFallbackConfig({
       enabled: true,
       models: ["openrouter/x/y"],
@@ -463,7 +456,55 @@ describe("dispatchFallback", () => {
     expect(decision.retry).toBe(true);
     expect(calls.abort).toBe(1);
     expect(calls.promptAsync).toBe(1);
-    expect((calls.lastBody?.parts as unknown[]).length).toBe(2);
+    // Fix A: the real user turn is already in server-side history; replaying it
+    // would render a second copy of the prompt in the TUI.
+    const parts = calls.lastBody?.parts as Array<Record<string, unknown>>;
+    expect(parts.length).toBe(1);
+    expect(parts[0]?.synthetic).toBe(true);
+    expect(String(parts[0]?.text)).toContain("[astrocode fallback]");
+  });
+
+  test("note-only history is skipped; the real turn is replayed for the next hop", async () => {
+    const { client, calls } = clientWith([
+      {
+        info: {
+          role: "user",
+          agent: "explore",
+          model: { providerID: "openrouter", modelID: "x/y" },
+        },
+        parts: [{ type: "text", text: "do the thing" }],
+      },
+      {
+        info: {
+          role: "user",
+          agent: "explore",
+          model: { providerID: "openrouter", modelID: "x/y" },
+        },
+        parts: [
+          {
+            type: "text",
+            text: "[astrocode fallback] retrying on openrouter/x/y",
+            synthetic: true,
+          },
+        ],
+      },
+    ]);
+    const config = parseFallbackConfig({
+      enabled: true,
+      models: ["openrouter/x/y", "openrouter/z/w"],
+      cooldown_seconds: 0,
+    });
+
+    const decision = await dispatchFallback(client as never, config, "s6", {
+      message: "You've hit your session limit · resets 6pm",
+    });
+
+    expect(decision.retry).toBe(true);
+    // Skips the note-only turn, resolves the real turn's agent/model, and
+    // advances past the already-used model.
+    expect(decision.model).toBe("openrouter/z/w");
+    expect(calls.lastBody?.agent).toBe("explore");
+    expect((calls.lastBody?.parts as unknown[]).length).toBe(1);
   });
 
   test("our own fallback note alone -> no-user-message (no note stacking)", async () => {
@@ -522,7 +563,30 @@ describe("dispatchFallback", () => {
     expect(calls.abort).toBe(1);
     expect(calls.promptAsync).toBe(1);
     expect(calls.lastBody?.agent).toBe("explore");
-    expect((calls.lastBody?.parts as unknown[]).length).toBe(2);
+    expect((calls.lastBody?.parts as unknown[]).length).toBe(1);
+  });
+
+  test("non-terminal retry also pins the fallback (client stays switched)", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const config = parseFallbackConfig({
+      enabled: true,
+      models: ["openrouter/x/y"],
+      cooldown_seconds: 0,
+    });
+    const error = { message: "429 Too Many Requests" };
+
+    // First transient error -> one same-model retry, no resubmission, no pin.
+    const first = await dispatchFallback(client as never, config, "s7", error);
+    expect(first.reason).toBe("same-model-retry");
+    expect(calls.promptAsync).toBe(0);
+    expect(getSessionModelState("s7")).toBeUndefined();
+
+    // Next error rotates the chain and must pin, so `chat.message` keeps the
+    // session on the fallback for following turns (fix B).
+    const second = await dispatchFallback(client as never, config, "s7", error);
+    expect(second.retry).toBe(true);
+    expect(calls.promptAsync).toBe(1);
+    expect(getSessionModelState("s7")?.currentModel).toBe("openrouter/x/y");
   });
 
   test("child with no fallback models on terminal quota -> aborts instead of hanging", async () => {

@@ -153,14 +153,19 @@ async function collectLastUserText(
     if (!entry || entry.info.role !== "user") continue;
 
     // Prefer the real (non-synthetic) user text, so retries don't stack our own
-    // "[astrocode fallback]" note. But a synthetic-only user turn still carries
-    // content worth replaying: opencode injects background-subagent results as a
-    // synthetic part, and a child session's delegation prompt may be synthetic
-    // too. So fall back to synthetic text with our own note stripped.
+    // "[astrocode fallback]" note. A synthetic-only user turn still resolves
+    // agent/model: opencode injects background-subagent results as a synthetic
+    // part, and a child session's delegation prompt may be synthetic too.
+    //
+    // NOTE: the returned `parts` are no longer replayed (fix A resubmits only
+    // the synthetic note); they exist so a caller can inspect the prompt if
+    // needed. The turn is used mainly to resolve `agent` and `model`.
     const visible: TextPartInput[] = [];
     const synthetic: TextPartInput[] = [];
+    let sawTextPart = false;
     for (const part of entry.parts) {
       if (!isTextPart(part)) continue;
+      sawTextPart = true;
       const textPart: TextPartInput = { type: "text", text: part.text };
       if ((part as { synthetic?: boolean }).synthetic) {
         if (!part.text.startsWith(FALLBACK_NOTE_PREFIX)) synthetic.push(textPart);
@@ -169,7 +174,14 @@ async function collectLastUserText(
       }
     }
     const textParts = visible.length > 0 ? visible : synthetic;
-    if (textParts.length === 0) return undefined;
+    if (textParts.length === 0) {
+      // A user turn carrying only our own fallback note (fix A resubmits
+      // note-only). Skip it and keep scanning older turns so a chained fallback
+      // still resolves the real prompt, agent and model. A turn with no text
+      // part at all is a genuine dead end.
+      if (sawTextPart) continue;
+      return undefined;
+    }
 
     const info = entry.info;
     // The registry is the safety net for a child session whose last user message
@@ -277,7 +289,12 @@ export async function dispatchFallback(
     // A terminal limit (subscription / quota / session limit) leaves the primary
     // model unusable for a long while, so remember the switch and keep the
     // session on the fallback for the following turns too (see session-model.ts).
-    if (decision.errorClass === "terminal_quota" && last.model) {
+    //
+    // Applies to every successful retry, not just terminal quota: opencode
+    // resolves the generation model from the client's own selection, so without
+    // the pin `chat.message` never rewrites it and the client snaps back to the
+    // primary on the very next turn (fix B).
+    if (last.model) {
       setSessionFallbackModel(sessionID, last.model, decision.model);
     }
 
@@ -296,9 +313,13 @@ export async function dispatchFallback(
     // Carry the agent too: opencode resolves the generation agent from the last
     // user message, and a resubmission without it would fall back to the default
     // agent (wrong for subagent/child sessions).
+    //
+    // Send ONLY the synthetic note (fix A): the real user turn is already in the
+    // server-side history, so replaying its text would append a duplicate user
+    // message that the TUI renders as a second copy of the prompt.
     const body = {
       model: parsed,
-      parts: [note, ...last.parts],
+      parts: [note],
       ...(last.agent ? { agent: last.agent } : {}),
     };
 
