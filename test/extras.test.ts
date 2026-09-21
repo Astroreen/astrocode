@@ -1,9 +1,13 @@
-import { test, expect, describe, beforeEach } from "bun:test";
+import { test, expect, describe, beforeEach, spyOn } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEnvContext, hasEnvContext, ENV_CONTEXT_MARKER } from "../src/env/context";
-import { linkExtraSkillDirs, discoverSkills } from "../src/skills/extra";
+import {
+  linkExtraSkillDirs,
+  discoverSkills,
+  discoverSkillsWithPriority,
+} from "../src/skills/extra";
 import {
   maybeContinueIdle,
   resetIdleContinuationState,
@@ -73,6 +77,52 @@ describe("discoverSkills", () => {
 
   test("dedupes and tolerates missing dirs", () => {
     expect(discoverSkills(["/definitely/not/here"]).length).toBe(0);
+  });
+
+  test("higher-priority source wins on a name collision", () => {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-prio-"));
+    const low = join(root, "low");
+    const high = join(root, "high");
+    mkdirSync(join(low, "dup"), { recursive: true });
+    mkdirSync(join(high, "dup"), { recursive: true });
+    writeFileSync(join(low, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
+    writeFileSync(join(high, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
+
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const skills = discoverSkillsWithPriority([
+        { dir: low, priority: 10, label: "low" },
+        { dir: high, priority: 60, label: "high" },
+      ]);
+      expect(skills.length).toBe(1);
+      expect(skills[0]?.location).toBe(join(high, "dup", "SKILL.md"));
+      expect(skills[0]?.source).toBe("high");
+      expect(skills[0]?.priority).toBe(60);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("legacy discoverSkills keeps first-dir-wins", () => {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-legacy-"));
+    const first = join(root, "first");
+    const second = join(root, "second");
+    mkdirSync(join(first, "dup"), { recursive: true });
+    mkdirSync(join(second, "dup"), { recursive: true });
+    writeFileSync(join(first, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
+    writeFileSync(join(second, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
+
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const skills = discoverSkills([first, second]);
+      expect(skills.length).toBe(1);
+      expect(skills[0]?.location).toBe(join(first, "dup", "SKILL.md"));
+    } finally {
+      spy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

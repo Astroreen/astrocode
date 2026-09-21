@@ -89,6 +89,14 @@ export interface DiscoveredSkill {
   name: string;
   description: string;
   location: string;
+  source?: string;
+  priority?: number;
+}
+
+export interface SkillSource {
+  dir: string;
+  priority: number;
+  label: string;
 }
 
 interface Frontmatter {
@@ -135,51 +143,112 @@ function parseFrontmatter(raw: string, fallbackName: string): Frontmatter {
   return fm;
 }
 
-export function discoverSkills(dirs: string[]): DiscoveredSkill[] {
-  const found: DiscoveredSkill[] = [];
-  const seen = new Set<string>();
-  for (const dir of dirs) {
-    if (typeof dir !== "string" || !dir.trim()) continue;
+export function discoverSkillsWithPriority(sources: SkillSource[]): DiscoveredSkill[] {
+  const winners = new Map<string, DiscoveredSkill>();
+  const losers = new Map<string, { label: string; priority: number }>();
+
+  for (const source of sources) {
+    if (!source || typeof source.dir !== "string" || !source.dir.trim()) continue;
     let entries: string[];
     try {
-      if (!existsSync(dir)) continue;
-      entries = readdirSync(dir);
+      if (!existsSync(source.dir)) continue;
+      entries = readdirSync(source.dir);
     } catch {
       continue;
     }
     for (const entry of entries) {
       try {
-        const skillDir = join(dir, entry);
+        const skillDir = join(source.dir, entry);
         if (!statSync(skillDir).isDirectory()) continue;
         const skillFile = join(skillDir, "SKILL.md");
         if (!existsSync(skillFile)) continue;
         const fm = parseFrontmatter(readFileSync(skillFile, "utf8"), entry);
-        if (!fm.name || seen.has(fm.name)) continue;
-        seen.add(fm.name);
-        found.push({
+        if (!fm.name) continue;
+
+        const candidate: DiscoveredSkill = {
           name: fm.name,
           description: fm.description ?? "",
           location: skillFile,
-        });
+          source: source.label,
+          priority: source.priority,
+        };
+
+        const existing = winners.get(fm.name);
+        if (!existing) {
+          winners.set(fm.name, candidate);
+          continue;
+        }
+        if (source.priority > (existing.priority ?? 0)) {
+          losers.set(fm.name, {
+            label: existing.source ?? "",
+            priority: existing.priority ?? 0,
+          });
+          winners.set(fm.name, candidate);
+        } else {
+          losers.set(fm.name, { label: source.label, priority: source.priority });
+        }
       } catch {
         continue;
       }
     }
   }
-  return found;
+
+  for (const [name, loser] of losers) {
+    const winner = winners.get(name);
+    if (!winner) continue;
+    console.error(
+      `[astrocode] skill collision: ${name} — kept ${winner.source}(${winner.priority}), dropped ${loser.label}(${loser.priority})`,
+    );
+  }
+
+  return [...winners.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function discoverSkills(dirs: string[]): DiscoveredSkill[] {
+  const sources: SkillSource[] = [];
+  for (let i = 0; i < dirs.length; i++) {
+    sources.push({ dir: dirs[i] ?? "", priority: dirs.length - i, label: `dir-${i}` });
+  }
+  return discoverSkillsWithPriority(sources);
+}
+
+export function standardSkillSources(
+  projectDirs: string[],
+  bundledDir?: string,
+): SkillSource[] {
+  const home = homedir();
+  const sources: SkillSource[] = [];
+  for (const project of projectDirs) {
+    if (typeof project !== "string" || !project.trim()) continue;
+    sources.push({
+      dir: join(project, ".opencode", "skills"),
+      priority: 60,
+      label: "project-opencode",
+    });
+    sources.push({
+      dir: join(project, ".claude", "skills"),
+      priority: 50,
+      label: "project-claude",
+    });
+    sources.push({
+      dir: join(project, ".agents", "skills"),
+      priority: 40,
+      label: "project-agents",
+    });
+  }
+  sources.push({
+    dir: join(home, ".config", "opencode", "skills"),
+    priority: 30,
+    label: "user-opencode",
+  });
+  sources.push({ dir: join(home, ".claude", "skills"), priority: 20, label: "user-claude" });
+  sources.push({ dir: join(home, ".agents", "skills"), priority: 10, label: "user-agents" });
+  if (bundledDir) {
+    sources.push({ dir: bundledDir, priority: 5, label: "builtin" });
+  }
+  return sources;
 }
 
 export function standardSkillDirs(projectDirs: string[]): string[] {
-  const home = homedir();
-  const dirs: string[] = [];
-  for (const project of projectDirs) {
-    if (typeof project !== "string" || !project.trim()) continue;
-    dirs.push(join(project, ".opencode", "skills"));
-    dirs.push(join(project, ".claude", "skills"));
-    dirs.push(join(project, ".agents", "skills"));
-  }
-  dirs.push(join(home, ".config", "opencode", "skills"));
-  dirs.push(join(home, ".claude", "skills"));
-  dirs.push(join(home, ".agents", "skills"));
-  return dirs;
+  return standardSkillSources(projectDirs).map((source) => source.dir);
 }
