@@ -49,6 +49,7 @@ import { buildBuiltinCommands } from "./commands";
 import { loadAstrocodeConfig } from "./config/astrocode";
 import { buildEnvContext, hasEnvContext } from "./env/context";
 import {
+  EXTRA_SKILL_PRIORITY,
   linkExtraSkillDirs,
   discoverSkillsWithPriority,
   standardSkillSources,
@@ -239,7 +240,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
         // command (user or builtin).
         const sources = standardSkillSources(searchDirs, BUNDLED_SKILLS_DIR);
         for (const dir of astrocodeConfig.skills.extraDirs) {
-          sources.push({ dir, priority: 35, label: "extra" });
+          sources.push({ dir, priority: EXTRA_SKILL_PRIORITY, label: "extra" });
         }
         const skills = discoverSkillsWithPriority(sources);
         let skillCommands = 0;

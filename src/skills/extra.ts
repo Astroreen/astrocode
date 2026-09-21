@@ -18,11 +18,18 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
   symlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { log } from "../log";
+
+// Priority for `skills.extraDirs` sources. Deliberately BELOW user-opencode (30)
+// so a user-authored skill of the same name is never shadowed by a bridged
+// cache copy.
+export const EXTRA_SKILL_PRIORITY = 25;
 
 export interface SkillLinkReport {
   linked: string[];
@@ -143,9 +150,24 @@ function parseFrontmatter(raw: string, fallbackName: string): Frontmatter {
   return fm;
 }
 
+// Resolve a path to its physical location, tolerating broken links/permissions.
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 export function discoverSkillsWithPriority(sources: SkillSource[]): DiscoveredSkill[] {
   const winners = new Map<string, DiscoveredSkill>();
   const losers = new Map<string, { label: string; priority: number }>();
+  // Real path of every accepted SKILL.md -> skill name. Two sources can reach
+  // the SAME physical skill (e.g. `skills.extraDirs` bridging a cache dir that
+  // was also symlinked into ~/.config/opencode/skills). Without this, the
+  // second sighting looks like a name collision and the higher-priority copy
+  // silently shadows the first — even though they are one file.
+  const realpaths = new Map<string, string>();
 
   for (const source of sources) {
     if (!source || typeof source.dir !== "string" || !source.dir.trim()) continue;
@@ -162,6 +184,13 @@ export function discoverSkillsWithPriority(sources: SkillSource[]): DiscoveredSk
         if (!statSync(skillDir).isDirectory()) continue;
         const skillFile = join(skillDir, "SKILL.md");
         if (!existsSync(skillFile)) continue;
+
+        // Already accepted under its physical path (possibly from another
+        // source): same skill, not a collision. Keep the first (highest
+        // priority encountered) and stay quiet.
+        const real = realpathOrSelf(skillFile);
+        if (realpaths.has(real)) continue;
+
         const fm = parseFrontmatter(readFileSync(skillFile, "utf8"), entry);
         if (!fm.name) continue;
 
@@ -176,6 +205,7 @@ export function discoverSkillsWithPriority(sources: SkillSource[]): DiscoveredSk
         const existing = winners.get(fm.name);
         if (!existing) {
           winners.set(fm.name, candidate);
+          realpaths.set(real, fm.name);
           continue;
         }
         if (source.priority > (existing.priority ?? 0)) {
@@ -183,7 +213,9 @@ export function discoverSkillsWithPriority(sources: SkillSource[]): DiscoveredSk
             label: existing.source ?? "",
             priority: existing.priority ?? 0,
           });
+          realpaths.delete(realpathOrSelf(existing.location));
           winners.set(fm.name, candidate);
+          realpaths.set(real, fm.name);
         } else {
           losers.set(fm.name, { label: source.label, priority: source.priority });
         }
@@ -196,8 +228,8 @@ export function discoverSkillsWithPriority(sources: SkillSource[]): DiscoveredSk
   for (const [name, loser] of losers) {
     const winner = winners.get(name);
     if (!winner) continue;
-    console.error(
-      `[astrocode] skill collision: ${name} — kept ${winner.source}(${winner.priority}), dropped ${loser.label}(${loser.priority})`,
+    log.warn(
+      `skill collision: ${name} — kept ${winner.source}(${winner.priority}), dropped ${loser.label}(${loser.priority})`,
     );
   }
 

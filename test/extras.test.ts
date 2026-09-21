@@ -1,9 +1,17 @@
 import { test, expect, describe, beforeEach, spyOn } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEnvContext, hasEnvContext, ENV_CONTEXT_MARKER } from "../src/env/context";
 import {
+  EXTRA_SKILL_PRIORITY,
   linkExtraSkillDirs,
   discoverSkills,
   discoverSkillsWithPriority,
@@ -89,7 +97,7 @@ describe("discoverSkills", () => {
     writeFileSync(join(low, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
     writeFileSync(join(high, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
 
-    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const spy = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const skills = discoverSkillsWithPriority([
         { dir: low, priority: 10, label: "low" },
@@ -115,7 +123,7 @@ describe("discoverSkills", () => {
     writeFileSync(join(first, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
     writeFileSync(join(second, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
 
-    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const spy = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const skills = discoverSkills([first, second]);
       expect(skills.length).toBe(1);
@@ -151,7 +159,7 @@ describe("discoverSkills", () => {
       "---\nname: commit-message\ndescription: project override\n---\nbody\n",
     );
 
-    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const spy = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const skills = discoverSkillsWithPriority(standardSkillSources([project], bundledDir));
       const winner = skills.find((skill) => skill.name === "commit-message");
@@ -161,6 +169,43 @@ describe("discoverSkills", () => {
       expect(winner?.location).not.toBe(join(bundledDir, "commit-message", "SKILL.md"));
     } finally {
       spy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("extra skill priority stays below user-opencode", () => {
+    expect(EXTRA_SKILL_PRIORITY).toBeLessThan(30);
+  });
+
+  test("same physical skill reached twice is deduped, not reported as a collision", () => {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-realpath-"));
+    const cache = join(root, "cache");
+    const userDir = join(root, "user");
+    mkdirSync(join(cache, "security-review"), { recursive: true });
+    writeFileSync(
+      join(cache, "security-review", "SKILL.md"),
+      "---\nname: security-review\ndescription: bridged\n---\nbody\n",
+    );
+    mkdirSync(userDir, { recursive: true });
+    // Mirrors linkExtraSkillDirs: the cache dir is symlinked into the user dir,
+    // so discovery reaches the same physical file from two sources.
+    symlinkSync(join(cache, "security-review"), join(userDir, "security-review"), "dir");
+
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const skills = discoverSkillsWithPriority([
+        { dir: userDir, priority: 30, label: "user-opencode" },
+        { dir: cache, priority: EXTRA_SKILL_PRIORITY, label: "extra" },
+      ]);
+      expect(skills.length).toBe(1);
+      expect(skills[0]?.name).toBe("security-review");
+      expect(skills[0]?.source).toBe("user-opencode");
+      expect(warnSpy).toHaveBeenCalledTimes(0);
+      expect(errorSpy).toHaveBeenCalledTimes(0);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
       rmSync(root, { recursive: true, force: true });
     }
   });
