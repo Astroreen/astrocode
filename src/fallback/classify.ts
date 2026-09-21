@@ -30,6 +30,19 @@ export const RETRYABLE_ERROR_PATTERNS: RegExp[] = [
   /server.?error/i,
   /bad.?gateway/i,
   /gateway.?timeout/i,
+  // Claude Code subscription wording ("You've hit your session limit · resets
+  // 4am") — the error often arrives wrapped in a MessageAbortedError, so the
+  // message text is what has to carry the signal.
+  /session.?limit/i,
+  /hit your/i,
+  /you'?ve hit/i,
+  /resets?\s+\d/i,
+  // Model/provider unavailable — oh-my classifies model_not_found as retryable,
+  // since the obvious fix is to switch to the next model in the chain.
+  /model.?not.?found/i,
+  /unknown.?(model|provider)/i,
+  /no such model/i,
+  /\b404\b/,
   /\b400\b.*\blimit\b/i,
   /\b429\b/,
   /\b500\b/,
@@ -102,9 +115,9 @@ export function getStatusCode(error: unknown): number | undefined {
 }
 
 export function isRetryableError(error: unknown, retryOnErrors: number[]): boolean {
-  if (getErrorName(error) === ABORT_ERROR_NAME) return false;
-
   const message = getErrorMessage(error);
+
+  // Never retry a context-window overflow on another model.
   if (CONTEXT_OVERFLOW_PATTERN.test(message)) return false;
 
   // NOTE: we deliberately do NOT veto on `error.data.isRetryable === false`.
@@ -113,11 +126,21 @@ export function isRetryableError(error: unknown, retryOnErrors: number[]): boole
   // the right move. Vetoing on it was why subscription-limit errors never
   // triggered a fallback.
 
+  // A clear retryable message wins even if the error is an abort: opencode wraps
+  // provider quota/limit failures in MessageAbortedError ("interrupted"), and the
+  // message text is the only reliable signal left.
+  if (RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message))) {
+    return true;
+  }
+
+  // A bare abort with no provider message is a user cancellation: never retry.
+  if (getErrorName(error) === ABORT_ERROR_NAME) return false;
+
   const status = getStatusCode(error);
   if (status !== undefined) {
     if (retryOnErrors.includes(status)) return true;
     if (status >= 500 && status <= 599) return true;
   }
 
-  return RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+  return false;
 }

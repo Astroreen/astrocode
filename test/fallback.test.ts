@@ -80,11 +80,33 @@ describe("classify", () => {
     expect(isRetryableError({ message: "maximum context length exceeded" }, codes)).toBe(false);
   });
 
+  test("abort wrapping a provider limit IS retryable (Claude Code session limit)", () => {
+    const codes = [429, 500, 502, 503, 504];
+    expect(
+      isRetryableError(
+        {
+          name: "MessageAbortedError",
+          data: { message: "Claude Code returned an error result: You've hit your session limit · resets 4am" },
+        },
+        codes,
+      ),
+    ).toBe(true);
+    expect(
+      isRetryableError({ name: "MessageAbortedError", message: "you've hit your limit" }, codes),
+    ).toBe(true);
+  });
+
   test("explicit isRetryable:false does NOT veto a model switch", () => {
     const codes = [429, 500, 502, 503, 504];
     // Switching providers is exactly what a subscription/quota limit needs.
     expect(isRetryableError({ data: { message: "nope", isRetryable: false, statusCode: 429 } }, codes)).toBe(true);
     expect(isRetryableError({ data: { message: "reached your limit", isRetryable: false } }, codes)).toBe(true);
+  });
+
+  test("model-not-found is retryable (switch model)", () => {
+    const codes = [429, 500, 502, 503, 504];
+    expect(isRetryableError({ message: "model not found" }, codes)).toBe(true);
+    expect(isRetryableError({ data: { message: "unknown provider" } }, codes)).toBe(true);
   });
 
   test("unrelated errors are not retryable", () => {

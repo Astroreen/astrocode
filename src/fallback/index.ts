@@ -14,6 +14,7 @@
 
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { TextPartInput } from "@opencode-ai/sdk";
+import { getAgentConfigKey } from "../agents/personas";
 import { getErrorMessage, isRetryableError } from "./classify";
 import type { FallbackConfig } from "./config";
 import {
@@ -27,6 +28,7 @@ export interface FallbackDecision {
   retry: boolean;
   reason: string;
   model?: string;
+  detail?: string;
 }
 
 // One retry at a time per session.
@@ -45,12 +47,16 @@ export function parseModelString(
 }
 
 // Per-agent list fully replaces the global list (decision #3: no merge).
+// Accepts either the display name ("Sisyphus - ultraworker") or the canonical
+// key ("sisyphus"), since a session's message.agent carries the display name.
 export function resolveFallbackModels(
   config: FallbackConfig,
   agent?: string,
 ): string[] {
-  if (agent && config.agents[agent]) {
-    return config.agents[agent].models;
+  if (agent) {
+    const entry =
+      config.agents[agent] ?? config.agents[getAgentConfigKey(agent)];
+    if (entry) return entry.models;
   }
   return config.models;
 }
@@ -153,10 +159,21 @@ export async function dispatchFallback(
   inFlight.add(sessionID);
 
   try {
-    // First pass with no message lookup: cheap rejection for disabled /
-    // non-retryable errors without hitting the SDK.
-    const precheck = decideFallback(config, sessionID, error);
-    if (!precheck.retry) return precheck;
+    // Cheap rejection first: disabled / non-retryable / throttled need no I/O.
+    // NOTE: we intentionally do NOT call `decideFallback` here without an agent,
+    // because a config with only per-agent fallback lists (no global `models`)
+    // would wrongly report "no-fallback-models" before we look up the agent.
+    if (!config.enabled) return { retry: false, reason: "disabled" };
+    if (!isRetryableError(error, config.retry_on_errors)) {
+      return {
+        retry: false,
+        reason: "not-retryable",
+        detail: getErrorMessage(error).slice(0, 200),
+      };
+    }
+    if (shouldThrottle(sessionID, config.max_attempts, config.cooldown_seconds)) {
+      return { retry: false, reason: "throttled" };
+    }
 
     const last = await collectLastUserText(client, sessionID);
     if (!last) {
