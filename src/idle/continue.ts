@@ -13,6 +13,7 @@ import type { PluginInput } from "@opencode-ai/plugin";
 import type { TextPartInput } from "@opencode-ai/sdk";
 import { getLastFallbackModel } from "../fallback/state";
 import {
+  ABORT_WINDOW_MS,
   CONTINUATION_COOLDOWN_MS,
   FAILURE_RESET_WINDOW_MS,
   MAX_BACKOFF_EXPONENT,
@@ -31,6 +32,7 @@ interface IdleSessionState {
 const counts = new Map<string, number>();
 const inFlight = new Set<string>();
 const states = new Map<string, IdleSessionState>();
+const aborts = new Map<string, number>();
 
 function getState(sessionID: string): IdleSessionState {
   let state = states.get(sessionID);
@@ -45,6 +47,11 @@ export function resetIdleContinuationState(): void {
   counts.clear();
   inFlight.clear();
   states.clear();
+  aborts.clear();
+}
+
+export function recordAbort(sessionID: string, now: number = Date.now()): void {
+  aborts.set(sessionID, now);
 }
 
 export function getIdleContinuationCount(sessionID: string): number {
@@ -82,6 +89,14 @@ export async function maybeContinueIdle(
   if (inFlight.has(sessionID)) return { continued: false, reason: "in-flight" };
   if (getIdleContinuationCount(sessionID) >= max) {
     return { continued: false, reason: "max-reached" };
+  }
+
+  const abortAt = aborts.get(sessionID);
+  if (abortAt !== undefined) {
+    if (now - abortAt < ABORT_WINDOW_MS) {
+      return { continued: false, reason: "abort-window" };
+    }
+    aborts.delete(sessionID);
   }
 
   inFlight.add(sessionID);

@@ -3,8 +3,9 @@ import {
   maybeContinueIdle,
   resetIdleContinuationState,
   getIdleBackoffState,
+  recordAbort,
 } from "../src/idle/continue";
-import { MAX_CONSECUTIVE_FAILURES } from "../src/idle/constants";
+import { ABORT_WINDOW_MS, MAX_CONSECUTIVE_FAILURES } from "../src/idle/constants";
 
 function fakeClient(initialTodos: unknown[]) {
   let todos = initialTodos;
@@ -92,5 +93,43 @@ describe("idle continuation backoff", () => {
 
     const resumed = await maybeContinueIdle(client, "s4", { now: 100_000 });
     expect(resumed.continued).toBe(true);
+  });
+});
+
+describe("idle continuation abort window", () => {
+  beforeEach(() => {
+    resetIdleContinuationState();
+  });
+
+  test("abort gate blocks continuation within the abort window", async () => {
+    const { client, sent } = fakeClient(pending(2));
+
+    recordAbort("a1", 0);
+    const blocked = await maybeContinueIdle(client, "a1", { now: 0 });
+    expect(blocked.continued).toBe(false);
+    expect(blocked.reason).toBe("abort-window");
+    expect(sent.length).toBe(0);
+  });
+
+  test("continuation proceeds once the abort window elapses", async () => {
+    const { client, sent } = fakeClient(pending(2));
+
+    recordAbort("a2", 0);
+    const blocked = await maybeContinueIdle(client, "a2", { now: ABORT_WINDOW_MS - 1 });
+    expect(blocked.reason).toBe("abort-window");
+
+    const resumed = await maybeContinueIdle(client, "a2", { now: ABORT_WINDOW_MS });
+    expect(resumed.continued).toBe(true);
+    expect(sent.length).toBe(1);
+  });
+
+  test("stale abort entry is deleted after the window (no permanent block)", async () => {
+    const { client } = fakeClient(pending(2));
+
+    recordAbort("a3", 0);
+    await maybeContinueIdle(client, "a3", { now: ABORT_WINDOW_MS });
+    // The stale entry was cleared; a fresh call within no window still proceeds.
+    const next = await maybeContinueIdle(client, "a3", { now: 100_000 });
+    expect(next.continued).toBe(true);
   });
 });
