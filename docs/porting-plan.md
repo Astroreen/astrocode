@@ -223,6 +223,84 @@ Changes made:
 - Test config lives in `.opencode/opencode.jsonc` (just `model` + `plugin`) and
   `.opencode/astrocode.jsonc` (agents + fallback).
 
+## Third-wave revision (display-name parity + fallback root-cause fix)
+
+User feedback round 2: `build`/`plan` should be replaced by the **same display names and full
+personas** as oh-my-openagent (`Sisyphus - ultraworker`, `Prometheus - Plan Builder`), all
+TAB-switchable agents should use oh-my display names, and fallback still failed on a real
+Claude Code session-limit error.
+
+Changes made (verified: `bun test` → 88 pass / 0 fail / 322 expect() calls across 9 files;
+`tsc --noEmit` → 0 errors; `opencode debug config` → `injected 11 agents`, `default_agent="Sisyphus
+- ultraworker"`, `build`/`plan` = `mode:"subagent"` + `hidden:true`):
+
+- **Display names** (`src/agents/personas.ts`): added `AGENT_DISPLAY_NAMES` matching
+  `oh-my-openagent/src/shared/agent-display-names.ts` exactly; the `config` hook now keys agents
+  by display name, sets their `name` field, and sets `root.default_agent`. Added
+  `getAgentDisplayName` / `getAgentConfigKey` (bidirectional, case-insensitive) so astrocode.jsonc
+  accepts either form. `DEMOTED_NATIVE_AGENTS = ["build","plan"]` are demoted to hidden subagents
+  (matching oh-my's `assembleSisyphusEnabledConfig`), replacing the earlier `buildNativeOverrides`
+  approach. Delegation references in `metadata.ts`, `commands/index.ts`, and the claude family
+  prompt updated to pass display names as `subagent_type`.
+- **Fallback root cause**: the Claude Code "session limit" error arrives wrapped in
+  `MessageAbortedError`, and the old `isRetryableError` vetoed aborts before pattern matching.
+  Reordered so context-overflow → retryable patterns → bare-abort veto → status codes; added
+  patterns `/session.?limit/`, `/hit your/`, `/you'?ve hit/`, `/resets?\s+\d/`,
+  `/model.?not.?found/`, `/unknown.?(model|provider)/`, `/no such model/`, `/\b404\b/`.
+- **Per-agent fallback resolution**: `dispatchFallback` precheck rewritten (it previously called
+  `decideFallback` without an agent and wrongly bailed with "no-fallback-models" when only
+  per-agent lists were configured). It now derives the agent from the session's last user message
+  (`info.agent`), so **subagent sessions resolve their own agent's fallback chain**. Fallback
+  decisions carry an optional `detail` that the event hook logs.
+- **artifacts**: `docs/oh-my-parity.md` (fact-checked parity table) and
+  `docs/plugin-test-prompt.md` (copy-paste prompt exercising every feature) added; README updated.
+- `.opencode/astrocode.jsonc` uses display-name keys for Sisyphus/Prometheus/Atlas.
+
+## Fourth-wave revision (6 requested parity features + live-fallback fix)
+
+User asked to close the remaining gaps listed in `docs/oh-my-parity.md` and reported that a
+Claude limit still did not switch models. Verified: `bun test` → **103 pass / 0 fail / 370
+expect() calls across 11 files**; `tsc --noEmit` → 0 errors; `opencode debug config` →
+`injected 11 agents, 9 commands, default_agent="Sisyphus - ultraworker", fallback=on, reasoning=on,
+idle-continuation=off`, `skills: linked 2 (security-review, security-research)`.
+
+- **(1) Extra agents** — investigated `athena`/`athena-junior`/`council-member`: a bundle-wide
+  grep found **no prompt/factory for them** (in oh-my they are owned by team-mode/council, which
+  astrocode drops). Narrowly added display names, then **removed them again at the user's
+  request** (an agent with no prompt is useless). Per-model momus/hephaestus variants were NOT
+  ported because they contradict locked decision #1 (family-level granularity). Final state: no
+  athena/council agents at all.
+- **(2) Reasoning/thinking** — new `src/models/tuning.ts`: `reasoningConfigForFamily(family)`
+  (claude → `{thinking:{type:"enabled",budgetTokens:32000}}`, gpt → `{reasoningEffort:"medium"}`,
+  others `{}`), merged per agent in the `config` hook from its resolved model family; toggle via
+  `reasoning.enabled`.
+- **(3) Sampling** — per-family `SamplingSettings` map with `resolveSampling(family, overrides)`;
+  defaults preserve kimi/glm/openrouter-generic 0.3/0.9; overridable via astrocode.jsonc
+  `sampling.<family>` (replaces the old hardcoded `chat.params` constants).
+- **(4) Skills priority** — new `src/skills/extra.ts` `linkExtraSkillDirs`: oh-my's skill cache
+  `~/.cache/opencode/skills` is not scanned by opencode natively, which is why the user's skills
+  vanished. Configured via `skills.extraDirs`; each `<name>/SKILL.md` dir is symlinked into
+  `~/.config/opencode/skills` (never overwrites). `buildSkillsGuidance()` now states user/project
+  skills take priority over built-in defaults. Follow-up: opencode lists skills only to the model,
+  not as commands, so `discoverSkills`/`standardSkillDirs` also register a thin `/<skill-name>`
+  command per discovered skill (never clobbering an existing command). Verified via
+  `opencode debug config` → `19 commands (10 from skills)` (caveman-family + compress + security-*).
+- **(5) Idle continuation** — new `src/idle/continue.ts` `maybeContinueIdle`: opt-in via
+  `idleContinuation.enabled`; on `session.idle`, if the session has unfinished todos, sends a
+  short continuation prompt on the same session (on the last fallback model if one was used),
+  capped by `max` (default 3) and one in flight per session.
+- **(6) Environment/date context** — new `src/env/context.ts`: `<omo-env>` block (Timezone,
+  Locale, Today) appended once to the system prompt by `experimental.chat.system.transform`,
+  mirroring oh-my's `applyEnvironmentContext`.
+- **Live fallback fix** — `event` hook now also handles `session.status` with `status.type ===
+  "retry"`, classifying `status.message` and switching models proactively during opencode's own
+  same-model retry loop (previously only `session.error` / `message.updated` were handled).
+  **Known unfixable gap**: a pre-flight `ProviderModelNotFoundError` is thrown by opencode's
+  `SessionPrompt.getModel` before any event, so a nonexistent model id cannot be caught.
+- `.opencode/astrocode.jsonc` gained `model`, `sampling`, `skills.extraDirs`,
+  `idleContinuation`, `reasoning`. Parity/README docs updated; new tests `test/tuning.test.ts`,
+  `test/extras.test.ts`, extended `test/index.test.ts` + `test/config.test.ts`.
+
 ## Historical next-steps (retained for reference)
 
 1. Get user sign-off on decisions #6/#7/#8 above (asked in chat, awaiting reply).

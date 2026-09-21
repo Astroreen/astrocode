@@ -9,7 +9,7 @@ parallel/background orchestration, tmux, git_master, browser_automation, categor
 
 ## Status
 
-Implemented and verified (`bun test`: 66 tests pass, `tsc --noEmit`: 0 errors):
+Implemented and verified (`bun test`: 103 tests pass, `tsc --noEmit`: 0 errors):
 
 - plugin entry (`src/index.ts`) — guards, Sisyphus dynamic-prompt dispatch, sampling,
   builtin-command injection, runtime model fallback
@@ -95,7 +95,12 @@ astrocode-specific in `opencode.jsonc`:
     "cooldown_seconds": 60,
     // Global chain, used by every agent without its own fallback_models.
     "models": ["openrouter/~deepseek/deepseek-flash-latest"]
-  }
+  },
+  // Optional extras:
+  "sampling": { "claude": { "temperature": 0.4, "topP": 0.8 } },
+  "skills": { "extraDirs": ["/home/you/.cache/opencode/skills"] },
+  "idleContinuation": { "enabled": false, "max": 3 },
+  "reasoning": { "enabled": true }
 }
 ```
 
@@ -105,8 +110,35 @@ override the file.
 
 Why fallback fires: on a retryable provider error (rate limit, quota, usage limit, credits,
 5xx, overloaded), astrocode resubmits the last user turn on the same session with the next
-chain model. opencode surfaces such failures as `session.error` **or** as a `message.updated`
-on an errored assistant message; astrocode handles both.
+chain model. opencode surfaces such failures as `session.error`, as a `message.updated` on an
+errored assistant message, **or** as a `session.status` retry (opencode's own same-model retry
+loop) — astrocode handles all three, switching models proactively on the retry event.
+
+**Known gap:** a pre-flight `ProviderModelNotFoundError` (a model id that does not exist) is
+raised by opencode before any assistant message/event is created, so no event fires and
+fallback cannot run. Verify model ids before relying on them.
+
+### Model tuning and extras
+
+- **Reasoning/thinking** (`src/models/tuning.ts`): every agent whose family resolves to claude
+  gets `thinking: { type: "enabled", budgetTokens: 32000 }`; gpt gets `reasoningEffort: "medium"`.
+  Toggle with `reasoning.enabled`.
+- **Sampling**: per-family `temperature`/`topP` map. Defaults keep kimi/glm/openrouter-generic at
+  0.3/0.9; override or extend via `sampling.<family>`.
+- **Environment/date context** (`src/env/context.ts`): a `<omo-env>` block (timezone, locale,
+  today) is appended to every agent's system prompt, mirroring oh-my's `applyEnvironmentContext`.
+- **Extra skills** (`src/skills/extra.ts`): opencode's native skill loader only scans specific
+  dirs, so skills left behind in oh-my's `~/.cache/opencode/skills` stop working. List such dirs
+  in `skills.extraDirs`; each `<name>/SKILL.md` subdir is symlinked into
+  `~/.config/opencode/skills` (never overwrites).
+- **Skills as slash commands** (`src/skills/extra.ts`): opencode registers skills for the model's
+  `skill` tool but does *not* expose them as commands, so `/caveman` etc. appear "missing" in the
+  UI. astrocode scans the standard skill dirs and registers a thin `/<skill-name>` command for
+  each discovered skill (never clobbers an existing command); invoking it tells the model to load
+  that skill via its own tool.
+- **Idle continuation** (`src/idle/continue.ts`): opt-in. On `session.idle`, if the session has
+  unfinished todos, a short continuation prompt is sent on the same session (on the fallback
+  model if one was already used), capped per session.
 
 ### Builtin commands
 
@@ -128,12 +160,31 @@ them via the `config` hook, so a project needs only the plugin entry — there i
 symlinking personas into `.opencode/agents/`. Every agent gets a distinct color (oh-my style,
 see `DEFAULT_COLORS` in `src/agents/personas.ts`), overridable per agent in `astrocode.jsonc`.
 
-opencode's builtin primary agents are replaced:
+Agents are registered under the **same display names as oh-my-openagent** (matching the TAB
+switcher), and `default_agent` is set to Sisyphus:
 
-- `build` → the **Sisyphus** orchestrator persona (default primary agent)
-- `plan` → the **Prometheus** planner persona (read-only; writes plans to `.sisyphus/plans/`)
+| canonical key | display name (config key) | color |
+|---|---|---|
+| `sisyphus` | `Sisyphus - ultraworker` | `#00CED1` |
+| `hephaestus` | `Hephaestus - Deep Agent` | `#FF6B35` |
+| `prometheus` | `Prometheus - Plan Builder` | `#9B59B6` |
+| `atlas` | `Atlas - Plan Executor` | `#3498DB` |
+| `sisyphus-junior` | `Sisyphus-Junior` | `#16A085` |
+| `metis` | `Metis - Plan Consultant` | `#F1C40F` |
+| `momus` | `Momus - Plan Critic` | `#E67E22` |
+| `oracle` | `oracle` | `#E74C3C` |
+| `explore` | `explore` | `#2ECC71` |
+| `librarian` | `librarian` | `#1ABC9C` |
+| `multimodal-looker` | `multimodal-looker` | `#E91E63` |
 
-Because `build` carries the Sisyphus marker, it also receives the dynamic prompt engine.
+opencode's builtin primary agents are replaced/demoted, exactly like oh-my-openagent:
+
+- `build` → demoted to a **hidden subagent** (`mode: "subagent"`, `hidden: true`); the Sisyphus
+  persona takes over its role as the default primary agent.
+- `plan` → demoted the same way; **Prometheus** (`Prometheus - Plan Builder`) is the planner,
+  with `edit` denied and plans written to `.sisyphus/plans/`.
+
+`astrocode.jsonc` agent keys may be either the canonical name or the display name.
 
 ## Why not just use oh-my-openagent?
 
@@ -159,13 +210,16 @@ Enabled **per-project**, never globally (do NOT add this to the global
 
 ### `/start-work` switches to Atlas
 
-The builtin `/start-work` command is injected with `agent: "atlas"` and `subtask: false`, so it
-switches the session to the **atlas** orchestrator (rather than running as a subagent).
+The builtin `/start-work` command is injected with `agent: "Atlas - Plan Executor"` and
+`subtask: false`, so it switches the session to Atlas (rather than running as a subagent).
 
 ### Per-agent model override
 
 Set `agents.<name>.model` in `astrocode.jsonc` (see the config example above). If omitted, the
-agent uses whatever model the calling session/`opencode.jsonc` has configured.
+agent uses whatever model the calling session/`opencode.jsonc` has configured. Subagents get
+their own agent-config `model` if set, otherwise the primary agent's model. Per-agent
+`fallback_models` apply to subagent sessions too — the fallback dispatcher reads the child
+session's agent name from its last user message.
 
 ### Environment variables
 
@@ -220,7 +274,7 @@ machine — e.g. `home-manager build --dry-run` (or your flake's equivalent, suc
 
 ```bash
 bun install
-bun test                 # 77 tests, all pass
+bun test                 # 103 tests, all pass
 bun run tsc --noEmit     # 0 errors
 ```
 
@@ -231,14 +285,20 @@ bun run tsc --noEmit     # 0 errors
 - `src/prompts/guards.ts` — verbatim defensive guard strings
 - `src/prompts/dump.ts` — `ASTROCODE_DUMP` debug side-channel
 - `src/prompts/sisyphus/` — dynamic prompt engine (`sections.ts`, `dispatch.ts`, `families/`)
-- `src/agents/personas.ts` — reads `agents/*.md`, injects the agent roster + colors + native
-  `build`/`plan` overrides
+- `src/agents/personas.ts` — reads `agents/*.md`, injects the agent roster under oh-my display
+  names with colors; computes `default_agent` and the demoted `build`/`plan` agents
 - `src/config/astrocode.ts` — loads the dedicated `astrocode.jsonc` (JSONC-aware)
+- `src/models/tuning.ts` — per-family reasoning/thinking + sampling options
+- `src/env/context.ts` — `<omo-env>` timezone/locale/date context
+- `src/skills/extra.ts` — bridges extra skill dirs into opencode's native skills dir
+- `src/idle/continue.ts` — opt-in idle continuation
 - `src/agents/metadata.ts` — agent behavioral metadata driving the dynamic sections
 - `src/fallback/` — runtime model fallback (config, classify, state, orchestrator)
 - `src/commands/index.ts` — 7 ported builtin commands
 - `agents/*.md` — native persona definitions (plugin-injected)
 - `test/*.test.ts` — bun test suite
+- `docs/oh-my-parity.md` — fact-checked parity table vs oh-my-openagent
+- `docs/plugin-test-prompt.md` — copy-paste prompt that exercises every shipped feature
 - `docs/porting-plan.md` — authoritative porting plan + locked decisions
 - `docs/spike-findings.md` — hook-semantics investigation
 - `docs/fallback-spike-findings.md` — early fallback feasibility investigation (superseded —
