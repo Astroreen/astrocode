@@ -26,30 +26,30 @@ export type ModelVersion =
 export function resolveModelVersion(modelID: string): ModelVersion | undefined {
   if (typeof modelID !== "string") return undefined;
 
-  const id = modelID.toLowerCase().replaceAll(".", "-");
+  const normalized = modelID.toLowerCase().replaceAll(".", "-");
 
   // 1. claude
-  if (id.includes("claude-opus-4-7")) return "claude-opus-4-7";
-  if (id.includes("claude-opus-4-8")) return "claude-opus-4-8";
-  if (id.includes("claude-opus-5")) return "claude-opus-5";
-  if (/claude-(?:fable|mythos)-(?:\d+|preview)/.test(id)) {
-    if (id.includes("claude-fable")) return "claude-fable";
+  if (normalized.includes("claude-opus-4-7")) return "claude-opus-4-7";
+  if (normalized.includes("claude-opus-4-8")) return "claude-opus-4-8";
+  if (normalized.includes("claude-opus-5")) return "claude-opus-5";
+  if (/claude-(?:fable|mythos)-(?:\d+|preview)/.test(normalized)) {
+    if (normalized.includes("claude-fable")) return "claude-fable";
     return "claude-mythos";
   }
 
   // 2. kimi
-  if (/kimi-k2[.\-]?6/.test(id)) return "kimi-k2-6";
-  if (/kimi-k2[.\-]?7/.test(id)) return "kimi-k2-7";
-  if (/kimi-k2[.\-]?8/.test(id)) return "kimi-k2-8";
-  if (/kimi-k3/.test(id)) return "kimi-k3";
-  if (/^swe-2(?:[-.]|$)/.test(id)) return "kimi-swe-2";
+  if (/kimi-k2[.\-]?6/.test(normalized)) return "kimi-k2-6";
+  if (/kimi-k2[.\-]?7/.test(normalized)) return "kimi-k2-7";
+  if (/kimi-k2[.\-]?8/.test(normalized)) return "kimi-k2-8";
+  if (/kimi-k3/.test(normalized)) return "kimi-k3";
+  if (/^swe-2(?:[-.]|$)/.test(normalized)) return "kimi-swe-2";
 
   // 3. grok
-  if (/grok-4-5(?![0-9])/.test(id)) return "grok-4-5";
-  if (/grok-4-6(?![0-9])/.test(id)) return "grok-4-6";
+  if (/grok-4-5(?![0-9])/.test(normalized)) return "grok-4-5";
+  if (/grok-4-6(?![0-9])/.test(normalized)) return "grok-4-6";
 
   // 4. minimax
-  if (id.includes("minimax")) return "minimax";
+  if (normalized.includes("minimax")) return "minimax";
 
   return undefined;
 }
