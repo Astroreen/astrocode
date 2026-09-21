@@ -9,11 +9,29 @@ parallel/background orchestration, tmux, git_master, browser_automation, categor
 
 ## Status
 
-Implemented and verified (`bun test`: 103 tests pass, `tsc --noEmit`: 0 errors):
+Implemented and verified (`bun test`: 157 tests pass, `tsc --noEmit`: 0 errors):
 
 - plugin entry (`src/index.ts`) — guards, Sisyphus dynamic-prompt dispatch, sampling,
   builtin-command injection, runtime model fallback
 - model router (`src/models/resolveFamily.ts`) — 7 families
+- version-level model detection (`src/models/resolveVersion.ts`) — `ModelVersion` union +
+  pure `resolveModelVersion(modelID)`
+- version-specific Sisyphus builders (`src/prompts/sisyphus/families/versions/*.ts`,
+  `VERSION_BUILDERS`) — 13 thin builders layered on top of the family builders
+- reasoning-level ladder (`src/models/tuning.ts`) — `REASONING_LEVELS`, `isReasoningLevel`,
+  `clampReasoningLevel`, `splitReasoningSuffix`, `reasoningConfigForFamily`
+- model canonicalization (`src/fallback/canonicalize.ts`) — `canonicalizeModelID`,
+  `areModelsEquivalent`; fallback never "switches" to a suffix-variant of the failed model
+- error classification (`src/fallback/classify.ts`) — `ErrorClass`, `TERMINAL_QUOTA_PATTERNS`,
+  `classifyError`; one bounded same-model retry for `non_terminal` errors
+- AGENTS.md walk-up context (`src/context/agentsmd.ts`) — `findAgentsMdFiles`,
+  `buildAgentsMdContext`, `hasAgentsMdContext`
+- idle backoff + abort window (`src/idle/constants.ts`, `src/idle/continue.ts`) — exponential
+  cooldown, consecutive-failure cap, 3s abort suppression
+- explicit skill-source priority + bundled builtin skills (`src/skills/extra.ts`,
+  `skills/builtin/**`) — `standardSkillSources`, `discoverSkillsWithPriority`
+- walk-up multi-layer config merge (`src/config/astrocode.ts`) — `collectConfigLayers`,
+  `mergeConfigLayers` (nearest wins, arrays full-replace)
 - guards + dump side-channel (`src/prompts/*.ts`)
 - dynamic Sisyphus prompt engine (`src/prompts/sisyphus/**`, `src/agents/metadata.ts`)
 - agent personas (`agents/*.md`, 11 shipped + `plan`/`build` overrides)
@@ -43,6 +61,11 @@ gate):
 (copied verbatim from oh-my-openagent's empirically-tuned text). `kimi`/`glm`/`openrouter-generic`
 additionally get a sampling override (`temperature=0.3`, `topP=0.9`) via `isCheapSamplingFamily`.
 
+`src/models/resolveVersion.ts` goes one level deeper: it detects model *versions* within families
+(claude-opus-4-7/4-8/5, claude-fable, claude-mythos, kimi-k2-6/7/8, kimi-k3, kimi-swe-2,
+grok-4-5/4-6, minimax) and feeds version-specific Sisyphus calibration. It is pure and total —
+normalizes the id (lowercase, `.`→`-`) and returns a `ModelVersion` literal or `undefined`.
+
 ### Dynamic Sisyphus prompt engine
 
 This is the biggest feature and the closest thing to oh-my-openagent's core value. When the
@@ -58,6 +81,11 @@ built live from `src/agents/metadata.ts`, so they stay accurate as the agent ros
 - **Family builders**: `src/prompts/sisyphus/families/{claude,gpt,glm,kimi,fallback,gemini}.ts`.
   Gemini is not a standalone persona: it reuses the fallback prompt plus Gemini-specific
   override blocks.
+- **Version builders**: `src/prompts/sisyphus/families/versions/*.ts` (13 thin builders, indexed
+  by `VERSION_BUILDERS`). `buildDynamicSisyphusPrompt(family, modelID?)` routes version-first,
+  family-second: when `resolveModelVersion(modelID)` matches, the version builder layers a
+  `<model_version_calibration>` block on top of the family builder; otherwise the family builder
+  is used unchanged.
 - **Option C hybrid** (see `docs/porting-plan.md`): `agents/sisyphus.md` stays as the static
   baseline persona; the plugin only appends the runtime-computed delta.
 
@@ -108,11 +136,34 @@ A per-agent `fallback_models` list fully replaces the global chain for that agen
 Inline plugin options (the second tuple element in `opencode.jsonc`) are still honored and
 override the file.
 
+**Walk-up multi-layer merge** (`src/config/astrocode.ts`): `collectConfigLayers` walks up from
+the project dir to home (farthest-first) and collects every `astrocode.jsonc`/`astrocode.json`
+found at each level; `mergeConfigLayers` merges them with **nearest wins**. Top-level keys and
+`fallback`/`sampling` are shallow-merged, `agents` (and `fallback.agents`) are merged per agent,
+and arrays (e.g. `fallback_models`) are **full-replaced** by the nearest layer that defines them —
+never concatenated. `loadAstrocodeConfig` merges all layers, then applies inline overrides on top.
+
 Why fallback fires: on a retryable provider error (rate limit, quota, usage limit, credits,
 5xx, overloaded), astrocode resubmits the last user turn on the same session with the next
 chain model. opencode surfaces such failures as `session.error`, as a `message.updated` on an
 errored assistant message, **or** as a `session.status` retry (opencode's own same-model retry
 loop) — astrocode handles all three, switching models proactively on the retry event.
+
+**Error classification** (`src/fallback/classify.ts`): `classifyError` returns one of
+`terminal_quota` / `non_terminal` / `context_overflow` / `not_retryable`. `terminal_quota`
+(quota/billing/session-limit wording, incl. Chinese variants) rotates to the next model
+immediately. `non_terminal` (rate limit, overload, 5xx) gets exactly **one** same-model retry
+first — bounded via the `sameModelRetried` flag in `src/fallback/state.ts` — then rotates.
+`context_overflow` and `not_retryable` never fall back.
+
+**Canonicalization** (`src/fallback/canonicalize.ts`): `canonicalizeModelID` strips
+`-thinking`/`-max`/`-high` suffixes for claude-opus/sonnet/haiku and normalizes dotted versions;
+`areModelsEquivalent` compares provider + canonical id. `pickFallbackModel` uses this so it never
+"switches" to a suffix-variant of the model that just failed (that is not a real fallback).
+
+**Backoff** (`src/fallback/state.ts`): `effectiveCooldownSeconds(base, failures)` doubles the
+configured cooldown per consecutive failure, capped at 2^5 (32x), so a repeatedly failing chain
+backs off instead of hammering providers.
 
 **Known gap:** a pre-flight `ProviderModelNotFoundError` (a model id that does not exist) is
 raised by opencode before any assistant message/event is created, so no event fires and
@@ -123,14 +174,31 @@ fallback cannot run. Verify model ids before relying on them.
 - **Reasoning/thinking** (`src/models/tuning.ts`): every agent whose family resolves to claude
   gets `thinking: { type: "enabled", budgetTokens: 32000 }`; gpt gets `reasoningEffort: "medium"`.
   Toggle with `reasoning.enabled`.
+- **Reasoning-level ladder** (`src/models/tuning.ts`): `REASONING_LEVELS` is the ordered ladder
+  `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`; `isReasoningLevel` validates a value and
+  `clampReasoningLevel` clamps a request down to the strongest level a model supports.
+  `splitReasoningSuffix` parses a trailing `:level` (or `:auto`) off a model id, and
+  `reasoningConfigForFamily(family, level?)` maps the level onto claude thinking / gpt
+  `reasoningEffort` (gpt collapses `high`/`xhigh`/`max` to `high`, `off`/`minimal` to `minimal`).
 - **Sampling**: per-family `temperature`/`topP` map. Defaults keep kimi/glm/openrouter-generic at
   0.3/0.9; override or extend via `sampling.<family>`.
 - **Environment/date context** (`src/env/context.ts`): a `<omo-env>` block (timezone, locale,
   today) is appended to every agent's system prompt, mirroring oh-my's `applyEnvironmentContext`.
+- **AGENTS.md directory context** (`src/context/agentsmd.ts`): `findAgentsMdFiles` walks up from
+  the project dir to home (nearest-first, max 5 files) and `buildAgentsMdContext` renders them as
+  `[Directory Context: <path>]` blocks (8000-char cap). Injected once per session via the system
+  transform hook, guarded by `hasAgentsMdContext` so it is never duplicated.
 - **Extra skills** (`src/skills/extra.ts`): opencode's native skill loader only scans specific
   dirs, so skills left behind in oh-my's `~/.cache/opencode/skills` stop working. List such dirs
   in `skills.extraDirs`; each `<name>/SKILL.md` subdir is symlinked into
   `~/.config/opencode/skills` (never overwrites).
+- **Skill-source priority** (`src/skills/extra.ts`): `standardSkillSources` assigns explicit
+  numeric priorities — project `.opencode`/`.claude`/`.agents` skills 60/50/40, user
+  `~/.config/opencode`/`~/.claude`/`~/.agents` skills 30/20/10, bundled builtin skills 5.
+  `discoverSkillsWithPriority` keeps the highest-priority definition per skill name and logs a
+  collision when a lower-priority copy is dropped (`discoverSkills` remains as a compat wrapper).
+- **Bundled builtin skills** (`skills/builtin/{commit-message,code-review,verify-before-done}/SKILL.md`):
+  always discoverable at the lowest priority tier, so a project/user skill of the same name wins.
 - **Skills as slash commands** (`src/skills/extra.ts`): opencode registers skills for the model's
   `skill` tool but does *not* expose them as commands, so `/caveman` etc. appear "missing" in the
   UI. astrocode scans the standard skill dirs and registers a thin `/<skill-name>` command for
@@ -138,7 +206,12 @@ fallback cannot run. Verify model ids before relying on them.
   that skill via its own tool.
 - **Idle continuation** (`src/idle/continue.ts`): opt-in. On `session.idle`, if the session has
   unfinished todos, a short continuation prompt is sent on the same session (on the fallback
-  model if one was already used), capped per session.
+  model if one was already used), capped per session. It uses an exponential cooldown
+  (`CONTINUATION_COOLDOWN_MS` doubling per consecutive failure, capped at `MAX_BACKOFF_EXPONENT`)
+  and stops after `MAX_CONSECUTIVE_FAILURES` unproductive sends (reset after
+  `FAILURE_RESET_WINDOW_MS`). A user abort (`session.error` with `MessageAbortedError`/`AbortError`)
+  calls `recordAbort`, suppressing continuation for `ABORT_WINDOW_MS` (3s). Constants live in
+  `src/idle/constants.ts`.
 
 ### Builtin commands
 
@@ -274,7 +347,7 @@ machine — e.g. `home-manager build --dry-run` (or your flake's equivalent, suc
 
 ```bash
 bun install
-bun test                 # 103 tests, all pass
+bun test                 # 157 tests, all pass
 bun run tsc --noEmit     # 0 errors
 ```
 
@@ -282,20 +355,27 @@ bun run tsc --noEmit     # 0 errors
 
 - `src/index.ts` — plugin entry (system transform, chat.params, config, event, dispose)
 - `src/models/resolveFamily.ts` — model -> family router (7 families)
+- `src/models/resolveVersion.ts` — model -> version detector (`ModelVersion` union)
 - `src/prompts/guards.ts` — verbatim defensive guard strings
 - `src/prompts/dump.ts` — `ASTROCODE_DUMP` debug side-channel
 - `src/prompts/sisyphus/` — dynamic prompt engine (`sections.ts`, `dispatch.ts`, `families/`)
+- `src/prompts/sisyphus/families/versions/` — version-specific Sisyphus builders + `VERSION_BUILDERS`
 - `src/agents/personas.ts` — reads `agents/*.md`, injects the agent roster under oh-my display
   names with colors; computes `default_agent` and the demoted `build`/`plan` agents
-- `src/config/astrocode.ts` — loads the dedicated `astrocode.jsonc` (JSONC-aware)
-- `src/models/tuning.ts` — per-family reasoning/thinking + sampling options
+- `src/config/astrocode.ts` — loads the dedicated `astrocode.jsonc` (JSONC-aware) with walk-up
+  multi-layer merge
+- `src/models/tuning.ts` — per-family reasoning/thinking + sampling options + reasoning ladder
 - `src/env/context.ts` — `<omo-env>` timezone/locale/date context
-- `src/skills/extra.ts` — bridges extra skill dirs into opencode's native skills dir
-- `src/idle/continue.ts` — opt-in idle continuation
+- `src/context/agentsmd.ts` — walk-up `AGENTS.md` directory-context injection
+- `src/skills/extra.ts` — bridges extra skill dirs into opencode's native skills dir; skill-source
+  priority + slash-command bridge
+- `src/idle/continue.ts` — opt-in idle continuation (backoff + abort window)
+- `src/idle/constants.ts` — idle-continuation timing/failure constants
 - `src/agents/metadata.ts` — agent behavioral metadata driving the dynamic sections
-- `src/fallback/` — runtime model fallback (config, classify, state, orchestrator)
+- `src/fallback/` — runtime model fallback (config, classify, canonicalize, state, orchestrator)
 - `src/commands/index.ts` — 7 ported builtin commands
 - `agents/*.md` — native persona definitions (plugin-injected)
+- `skills/builtin/` — bundled builtin skills (lowest priority tier)
 - `test/*.test.ts` — bun test suite
 - `docs/oh-my-parity.md` — fact-checked parity table vs oh-my-openagent
 - `docs/plugin-test-prompt.md` — copy-paste prompt that exercises every shipped feature
