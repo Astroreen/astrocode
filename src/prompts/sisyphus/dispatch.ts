@@ -15,6 +15,8 @@
 // on top (AD-1 append-only spirit).
 
 import type { ModelFamily } from "../../models/resolveFamily";
+import { resolveModelVersion } from "../../models/resolveVersion";
+import { VERSION_BUILDERS } from "./families/versions";
 import { buildClaudeSisyphusPrompt } from "./families/claude";
 import { buildGptSisyphusPrompt } from "./families/gpt";
 import { buildGlmSisyphusPrompt } from "./families/glm";
@@ -30,7 +32,16 @@ export function isSisyphusSession(system: string[]): boolean {
   return system.some((entry) => entry.includes(SISYPHUS_MARKER));
 }
 
-export function buildDynamicSisyphusPrompt(family: ModelFamily): string {
+export function buildDynamicSisyphusPrompt(
+  family: ModelFamily,
+  modelID?: string,
+): string {
+  if (modelID) {
+    const version = resolveModelVersion(modelID);
+    const versionBuilder = version ? VERSION_BUILDERS[version] : undefined;
+    if (versionBuilder) return versionBuilder();
+  }
+
   switch (family) {
     case "claude":
       return buildClaudeSisyphusPrompt();
