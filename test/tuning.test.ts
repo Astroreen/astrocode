@@ -3,7 +3,44 @@ import {
   reasoningConfigForFamily,
   resolveSampling,
   DEFAULT_SAMPLING,
+  clampReasoningLevel,
+  splitReasoningSuffix,
 } from "../src/models/tuning";
+
+describe("clampReasoningLevel", () => {
+  test("clamps down to the strongest allowed level", () => {
+    expect(clampReasoningLevel("max", ["low", "medium"])).toBe("medium");
+  });
+
+  test("returns undefined when nothing at or below is allowed", () => {
+    expect(clampReasoningLevel("low", ["high"])).toBeUndefined();
+  });
+});
+
+describe("splitReasoningSuffix", () => {
+  test("splits a provider-prefixed reasoning suffix", () => {
+    expect(splitReasoningSuffix("anthropic/claude-opus-4-7:high")).toEqual({
+      base: "anthropic/claude-opus-4-7",
+      level: "high",
+    });
+  });
+
+  test("keeps a bare :max attached unless allowMaxSuffix", () => {
+    expect(splitReasoningSuffix("claude-opus-4-7:max")).toEqual({
+      base: "claude-opus-4-7:max",
+    });
+    expect(splitReasoningSuffix("anthropic/claude-opus-4-7:max")).toEqual({
+      base: "anthropic/claude-opus-4-7",
+      level: "max",
+    });
+  });
+
+  test("leaves non-level suffixes attached", () => {
+    expect(splitReasoningSuffix("model:notalevel")).toEqual({
+      base: "model:notalevel",
+    });
+  });
+});
 
 describe("reasoningConfigForFamily", () => {
   test("claude gets extended thinking with a budget", () => {
@@ -16,6 +53,12 @@ describe("reasoningConfigForFamily", () => {
 
   test("gpt gets reasoningEffort medium", () => {
     expect(reasoningConfigForFamily("gpt")).toEqual({ reasoningEffort: "medium" });
+  });
+
+  test("gpt maps an explicit level to reasoningEffort", () => {
+    expect(reasoningConfigForFamily("gpt", "high")).toEqual({
+      reasoningEffort: "high",
+    });
   });
 
   test("other families get nothing", () => {

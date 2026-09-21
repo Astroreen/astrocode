@@ -14,19 +14,91 @@ import type { ModelFamily } from "./resolveFamily";
 
 export const CLAUDE_THINKING_BUDGET_TOKENS = 32000;
 
+// Ordered reasoning ladder, weakest to strongest. Used to clamp a requested
+// level down to the strongest level a given model actually supports.
+export const REASONING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+export function isReasoningLevel(value: string): value is ReasoningLevel {
+  return (REASONING_LEVELS as readonly string[]).includes(value);
+}
+
+// Clamp a requested level down to the first level present in `allowed`.
+// Returns undefined when the request is not a known level or nothing matches.
+export function clampReasoningLevel(
+  value: string,
+  allowed: readonly string[],
+): ReasoningLevel | undefined {
+  if (!isReasoningLevel(value)) return undefined;
+  const start = REASONING_LEVELS.indexOf(value);
+  for (let i = start; i >= 0; i--) {
+    const candidate = REASONING_LEVELS[i];
+    if (allowed.includes(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+// Split a trailing reasoning suffix off a model id. The suffix is the token
+// after the LAST ":" and must be a reasoning level or "auto". A bare ":max"
+// without a provider prefix is kept attached unless allowMaxSuffix is set.
+export function splitReasoningSuffix(
+  model: string,
+  options?: { allowMaxSuffix?: boolean },
+): { base: string; level?: string } {
+  const idx = model.lastIndexOf(":");
+  if (idx === -1) return { base: model };
+  const base = model.slice(0, idx);
+  const token = model.slice(idx + 1);
+  if (token !== "auto" && !isReasoningLevel(token)) {
+    return { base: model };
+  }
+  if (token === "max" && !options?.allowMaxSuffix && !base.includes("/")) {
+    return { base: model };
+  }
+  return { base, level: token };
+}
+
 // Options merged into an agent's config. `thinking` is an Anthropic passthrough
 // option; `reasoningEffort` is an OpenAI passthrough option. Unknown/other
 // families get nothing.
 export function reasoningConfigForFamily(
   family: ModelFamily,
+  level?: ReasoningLevel,
 ): Record<string, unknown> {
   if (family === "claude") {
     return { thinking: { type: "enabled", budgetTokens: CLAUDE_THINKING_BUDGET_TOKENS } };
   }
   if (family === "gpt") {
-    return { reasoningEffort: "medium" };
+    return { reasoningEffort: gptReasoningEffort(level) };
   }
   return {};
+}
+
+function gptReasoningEffort(level?: ReasoningLevel): string {
+  switch (level) {
+    case "off":
+    case "minimal":
+      return "minimal";
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+    case "xhigh":
+    case "max":
+      return "high";
+    default:
+      return "medium";
+  }
 }
 
 export interface SamplingSettings {
