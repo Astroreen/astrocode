@@ -72,7 +72,7 @@ import {
   type PersonaDefinition,
 } from "./agents/personas";
 
-const LOG_PREFIX = "[astrocode]";
+import { log, configureLogger } from "./log";
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const AGENTS_DIR = join(PLUGIN_ROOT, "agents");
@@ -122,6 +122,10 @@ function truncate(value: string, max: number): string {
 }
 
 const astrocodePlugin: Plugin = async (input, options) => {
+  // Route info/warn/debug to opencode's server log (not the TUI) before any
+  // hook runs. Errors keep going to stderr and stay visible in the TUI.
+  configureLogger(input.client);
+
   const projectDir = input?.directory;
   const searchDirs = [input?.directory, input?.worktree].filter(
     (dir): dir is string => typeof dir === "string" && dir.length > 0,
@@ -140,13 +144,13 @@ const astrocodePlugin: Plugin = async (input, options) => {
   if (astrocodeConfig.skills.extraDirs.length > 0) {
     try {
       const report = linkExtraSkillDirs(astrocodeConfig.skills.extraDirs);
-      console.error(
-        `${LOG_PREFIX} skills: linked ${report.linked.length}` +
+      log.info(
+        `skills: linked ${report.linked.length}` +
           (report.linked.length ? ` (${report.linked.join(", ")})` : "") +
           `, skipped ${report.skipped.length}`,
       );
     } catch (err) {
-      console.error(`${LOG_PREFIX} skills: link step failed; no-op`, err);
+      log.error("skills: link step failed; no-op", err);
     }
   }
 
@@ -256,14 +260,14 @@ const astrocodePlugin: Plugin = async (input, options) => {
 
         root.command = commands;
 
-        console.error(
-          `${LOG_PREFIX} config: injected ${Object.keys(displayPersonas).length} agents, ` +
+        log.info(
+          `config: injected ${Object.keys(displayPersonas).length} agents, ` +
             `${Object.keys(commands).length} commands (${skillCommands} from skills), ` +
             `default_agent="${DEFAULT_AGENT}", ` +
             `fallback=${fallbackConfig.enabled ? "on" : "off"}`,
         );
       } catch (err) {
-        console.error(`${LOG_PREFIX} config hook threw; no-op`, err);
+        log.error("config hook threw; no-op", err);
       }
     },
 
@@ -283,9 +287,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
             const result = await maybeContinueIdle(input.client, target, {
               max: astrocodeConfig.idleContinuation.max,
             });
-            console.error(
-              `${LOG_PREFIX} idle-continuation: ${result.reason}`,
-            );
+            log.info(`idle-continuation: ${result.reason}`);
           }
           return;
         }
@@ -309,9 +311,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
         // dispatch branches so a child's very first error is already classified.
         if (event.type === "session.created") {
           if (registerChildSessionFromInfo(event.properties?.info)) {
-            console.error(
-              `${LOG_PREFIX} subagent: tracking child session ${event.properties.info.id}`,
-            );
+            log.info(`subagent: tracking child session ${event.properties.info.id}`);
           }
           return;
         }
@@ -325,11 +325,26 @@ const astrocodePlugin: Plugin = async (input, options) => {
           model?: string;
           detail?: string;
         }) => {
-          console.error(
-            `${LOG_PREFIX} fallback(${hook}): ${decision.reason}` +
-              (decision.model ? ` -> ${decision.model}` : "") +
-              (decision.detail ? ` (${decision.detail})` : ""),
-          );
+          const text =
+            `fallback(${hook}): ${decision.reason}` +
+            (decision.model ? ` -> ${decision.model}` : "") +
+            (decision.detail ? ` (${decision.detail})` : "");
+          // A successful switch is worth surfacing. Routine no-ops — user
+          // aborts (`not-retryable`/`Aborted`), `disabled`, `in-flight`, retry
+          // dedup, `same-model-retry` — go to debug so a healthy session is
+          // quiet; run with ASTROCODE_LOG_LEVEL=debug to see them.
+          if (decision.reason === "retry") {
+            log.info(text);
+            // Deliberate user-facing signal: the primary model hit a limit and
+            // the session moved to a fallback. Everything else stays in the log.
+            log.toast({ variant: "info", title: "astrocode fallback", message: text });
+          } else if (
+            decision.detail === "child-aborted" ||
+            decision.reason === "throttled" ||
+            decision.reason === "resubmit-failed"
+          )
+            log.warn(text);
+          else log.debug(text);
         };
 
         if (event.type === "session.error") {
@@ -384,7 +399,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
           );
         }
       } catch (err) {
-        console.error(`${LOG_PREFIX} event hook threw; no-op`, err);
+        log.error("event hook threw; no-op", err);
       }
     },
 
@@ -437,15 +452,15 @@ const astrocodePlugin: Plugin = async (input, options) => {
           touchSessionFallbackModel(sessionID);
         }
       } catch (err) {
-        console.error(`${LOG_PREFIX} chat.message hook threw; no-op`, err);
+        log.error("chat.message hook threw; no-op", err);
       }
     },
 
     "experimental.chat.system.transform": async (input, output) => {
       try {
         if (!output || !Array.isArray(output.system)) {
-          console.error(
-            `${LOG_PREFIX} experimental.chat.system.transform: output.system missing or not an array; no-op`,
+          log.warn(
+            "experimental.chat.system.transform: output.system missing or not an array; no-op",
           );
           return;
         }
@@ -499,8 +514,8 @@ const astrocodePlugin: Plugin = async (input, options) => {
           timestamp: new Date().toISOString(),
         });
       } catch (err) {
-        console.error(
-          `${LOG_PREFIX} experimental.chat.system.transform threw; no-op`,
+        log.error(
+          "experimental.chat.system.transform threw; no-op",
           err,
         );
       }
@@ -509,9 +524,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
     "chat.params": async (input, output) => {
       try {
         if (!output || typeof output !== "object") {
-          console.error(
-            `${LOG_PREFIX} chat.params: output missing or not an object; no-op`,
-          );
+          log.warn("chat.params: output missing or not an object; no-op");
           return;
         }
 
@@ -530,7 +543,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
           }
         }
       } catch (err) {
-        console.error(`${LOG_PREFIX} chat.params threw; no-op`, err);
+        log.error("chat.params threw; no-op", err);
       }
     },
   };
