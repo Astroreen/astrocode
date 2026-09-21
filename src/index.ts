@@ -31,7 +31,20 @@ import {
   buildDynamicSisyphusPrompt,
 } from "./prompts/sisyphus/dispatch";
 import { dispatchFallback, parseModelString } from "./fallback";
-import { clearAll as clearFallbackState } from "./fallback/state";
+import { areModelsEquivalent } from "./fallback/canonicalize";
+import { clearAll as clearFallbackState, clearRetryKeys, markRetryKey } from "./fallback/state";
+import {
+  clearAllSessionModels,
+  clearSessionModelState,
+  getSessionModelState,
+  isFallbackPinActive,
+  touchSessionFallbackModel,
+} from "./fallback/session-model";
+import {
+  clearChildSessions,
+  registerChildSessionFromInfo,
+  unregisterChildSession,
+} from "./fallback/subagent";
 import { buildBuiltinCommands } from "./commands";
 import { loadAstrocodeConfig } from "./config/astrocode";
 import { buildEnvContext, hasEnvContext } from "./env/context";
@@ -140,6 +153,8 @@ const astrocodePlugin: Plugin = async (input, options) => {
   return {
     dispose: async () => {
       clearFallbackState();
+      clearAllSessionModels();
+      clearChildSessions();
       resetIdleContinuationState();
     },
 
@@ -288,6 +303,23 @@ const astrocodePlugin: Plugin = async (input, options) => {
 
         if (!fallbackConfig.enabled) return;
 
+        // Track child (subagent) sessions. opencode's built-in `task` tool
+        // creates them with `parentID`, and children need different fallback
+        // treatment (see src/fallback/subagent.ts). Registered before the
+        // dispatch branches so a child's very first error is already classified.
+        if (event.type === "session.created") {
+          if (registerChildSessionFromInfo(event.properties?.info)) {
+            console.error(
+              `${LOG_PREFIX} subagent: tracking child session ${event.properties.info.id}`,
+            );
+          }
+          return;
+        }
+        if (event.type === "session.deleted") {
+          unregisterChildSession(event.properties.info.id);
+          return;
+        }
+
         const logDecision = (hook: string, decision: {
           reason: string;
           model?: string;
@@ -339,6 +371,11 @@ const astrocodePlugin: Plugin = async (input, options) => {
           if (!status || status.type !== "retry") return;
           const target = event.properties?.sessionID;
           if (!target) return;
+          // opencode re-emits the same retry status on every backoff tick (and the
+          // same failure may also arrive via session.error / message.updated), so
+          // dedup per (attempt, message) before dispatching.
+          const retryKey = `${status.attempt}:${status.message.trim().slice(0, 200)}`;
+          if (!markRetryKey(target, retryKey)) return;
           logDecision(
             "session.status",
             await dispatchFallback(input.client, fallbackConfig, target, {
@@ -348,6 +385,59 @@ const astrocodePlugin: Plugin = async (input, options) => {
         }
       } catch (err) {
         console.error(`${LOG_PREFIX} event hook threw; no-op`, err);
+      }
+    },
+
+    // Keep a session that was switched to a fallback (after a terminal limit) on
+    // that fallback for the next turns. opencode resolves the generation model
+    // from the last user message, and mutating `output.message.model` here is
+    // persisted — see oh-my's runtime-fallback chat-message-handler for the same
+    // lever. Any explicit, different model request is treated as a manual switch.
+    "chat.message": async (input, output) => {
+      try {
+        const sessionID = input?.sessionID;
+        if (!sessionID) return;
+        const state = getSessionModelState(sessionID);
+        if (!state) return;
+
+        const requested = input?.model
+          ? `${input.model.providerID}/${input.model.modelID}`
+          : undefined;
+
+        // Already on the fallback (our own resubmission, or a client that picked
+        // it up): keep the pin fresh.
+        if (requested && areModelsEquivalent(requested, state.currentModel)) {
+          touchSessionFallbackModel(sessionID);
+          return;
+        }
+
+        // Any other explicitly requested model is a deliberate user switch:
+        // release the pin and let the user's choice through.
+        if (requested && !areModelsEquivalent(requested, state.originalModel)) {
+          clearSessionModelState(sessionID);
+          clearRetryKeys(sessionID);
+          return;
+        }
+
+        // The client still asks for the original model. The TUI keeps sending the
+        // model it had selected before the switch, so while the pin is fresh we
+        // treat this as stale and keep the session on the fallback; once the
+        // window elapses we restore the primary.
+        if (
+          requested &&
+          !isFallbackPinActive(sessionID, fallbackConfig.cooldown_seconds)
+        ) {
+          clearSessionModelState(sessionID);
+          return;
+        }
+
+        const parsed = parseModelString(state.currentModel);
+        if (parsed) {
+          output.message.model = parsed;
+          touchSessionFallbackModel(sessionID);
+        }
+      } catch (err) {
+        console.error(`${LOG_PREFIX} chat.message hook threw; no-op`, err);
       }
     },
 

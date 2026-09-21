@@ -4,9 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import astrocodePlugin from "../src/index";
 import {
+  clearAllSessionModels,
+  getSessionModelState,
+  setSessionFallbackModel,
+} from "../src/fallback/session-model";
+import {
   maybeContinueIdle,
   resetIdleContinuationState,
 } from "../src/idle/continue";
+import { clearChildSessions, isChildSession } from "../src/fallback/subagent";
 
 describe("astrocode plugin — experimental.chat.system.transform", () => {
   test("appends guards for cheap-openrouter model, preserves base", async () => {
@@ -233,5 +239,155 @@ describe("astrocode plugin — abort detection", () => {
     const result = await maybeContinueIdle(client, "abort-s1");
     expect(result.continued).toBe(false);
     expect(result.reason).toBe("abort-window");
+  });
+});
+
+describe("astrocode plugin — chat.message fallback pin", () => {
+  const ORIGINAL = "anthropic/claude-sonnet-4-6";
+  const FALLBACK = "openrouter/~deepseek/deepseek-flash-latest";
+  const parsedFallback = {
+    providerID: "openrouter",
+    modelID: "~deepseek/deepseek-flash-latest",
+  };
+  const claude = { providerID: "anthropic", modelID: "claude-sonnet-4-6" };
+
+  function messageOutput(model: { providerID: string; modelID: string }) {
+    return { message: { model: { ...model } }, parts: [] } as any;
+  }
+
+  test("no pinned session -> message untouched", async () => {
+    clearAllSessionModels();
+    const hooks = await astrocodePlugin({} as any);
+    const output = messageOutput(claude);
+
+    await hooks["chat.message"]!(
+      { sessionID: "cm-none", model: { ...claude } } as any,
+      output,
+    );
+
+    expect(output.message.model).toEqual(claude);
+  });
+
+  test("fresh pin overrides a stale primary-model request", async () => {
+    clearAllSessionModels();
+    setSessionFallbackModel("cm-fresh", ORIGINAL, FALLBACK);
+    const hooks = await astrocodePlugin({} as any);
+    const output = messageOutput(claude);
+
+    await hooks["chat.message"]!(
+      { sessionID: "cm-fresh", model: { ...claude } } as any,
+      output,
+    );
+
+    expect(output.message.model).toEqual(parsedFallback);
+  });
+
+  test("stale pin restores the primary and drops the state", async () => {
+    clearAllSessionModels();
+    setSessionFallbackModel("cm-stale", ORIGINAL, FALLBACK, Date.now() - 120_000);
+    const hooks = await astrocodePlugin({} as any);
+    const output = messageOutput(claude);
+
+    await hooks["chat.message"]!(
+      { sessionID: "cm-stale", model: { ...claude } } as any,
+      output,
+    );
+
+    expect(output.message.model).toEqual(claude);
+    expect(getSessionModelState("cm-stale")).toBeUndefined();
+  });
+
+  test("manual switch to a third model clears the pin", async () => {
+    clearAllSessionModels();
+    setSessionFallbackModel("cm-manual", ORIGINAL, FALLBACK);
+    const hooks = await astrocodePlugin({} as any);
+    const third = { providerID: "openai", modelID: "gpt-4o" };
+    const output = messageOutput(third);
+
+    await hooks["chat.message"]!(
+      { sessionID: "cm-manual", model: { ...third } } as any,
+      output,
+    );
+
+    expect(output.message.model).toEqual(third);
+    expect(getSessionModelState("cm-manual")).toBeUndefined();
+  });
+
+  test("request already on the fallback -> no rewrite, pin refreshed", async () => {
+    clearAllSessionModels();
+    setSessionFallbackModel("cm-same", ORIGINAL, FALLBACK, Date.now() - 120_000);
+    const hooks = await astrocodePlugin({} as any);
+    const output = messageOutput(parsedFallback);
+
+    await hooks["chat.message"]!(
+      { sessionID: "cm-same", model: { ...parsedFallback } } as any,
+      output,
+    );
+
+    expect(getSessionModelState("cm-same")).toBeDefined();
+    expect(output.message.model).toEqual(parsedFallback);
+  });
+
+  test("no requested model -> forces the fallback", async () => {
+    clearAllSessionModels();
+    setSessionFallbackModel("cm-nomodel", ORIGINAL, FALLBACK);
+    const hooks = await astrocodePlugin({} as any);
+    const output = messageOutput(claude);
+
+    await hooks["chat.message"]!({ sessionID: "cm-nomodel" } as any, output);
+
+    expect(output.message.model).toEqual(parsedFallback);
+  });
+});
+
+describe("astrocode plugin — subagent session tracking", () => {
+  const enabledOptions = {
+    fallback: { enabled: true, models: ["openrouter/x/y"] },
+  };
+
+  test("session.created with parentID registers the child; deleted removes it", async () => {
+    clearChildSessions();
+    const hooks = await astrocodePlugin({} as any, enabledOptions as any);
+
+    await hooks.event!({
+      event: {
+        type: "session.created",
+        properties: { info: { id: "child-1", parentID: "root-1", agent: "explore" } },
+      },
+    } as any);
+    expect(isChildSession("child-1")).toBe(true);
+
+    await hooks.event!({
+      event: {
+        type: "session.deleted",
+        properties: { info: { id: "child-1", parentID: "root-1" } },
+      },
+    } as any);
+    expect(isChildSession("child-1")).toBe(false);
+  });
+
+  test("session.created without parentID is not tracked", async () => {
+    clearChildSessions();
+    const hooks = await astrocodePlugin({} as any, enabledOptions as any);
+
+    await hooks.event!({
+      event: { type: "session.created", properties: { info: { id: "root-2" } } },
+    } as any);
+
+    expect(isChildSession("root-2")).toBe(false);
+  });
+
+  test("fallback disabled -> children are not tracked", async () => {
+    clearChildSessions();
+    const hooks = await astrocodePlugin({} as any);
+
+    await hooks.event!({
+      event: {
+        type: "session.created",
+        properties: { info: { id: "child-3", parentID: "root-3", agent: "explore" } },
+      },
+    } as any);
+
+    expect(isChildSession("child-3")).toBe(false);
   });
 });

@@ -20,6 +20,7 @@ import { classifyError, getErrorMessage, isRetryableError } from "./classify";
 import type { ErrorClass } from "./classify";
 import type { FallbackConfig } from "./config";
 import {
+  clearRetryKeys,
   getAttemptCount,
   getLastFallbackModel,
   hasSameModelRetried,
@@ -28,6 +29,8 @@ import {
   resetSameModelRetried,
   shouldThrottle,
 } from "./state";
+import { setSessionFallbackModel } from "./session-model";
+import { getChildSessionAgent, isChildSession } from "./subagent";
 
 export interface FallbackDecision {
   retry: boolean;
@@ -39,6 +42,10 @@ export interface FallbackDecision {
 
 // One retry at a time per session.
 const inFlight = new Set<string>();
+
+// Marker on the synthetic note we prepend to a resubmission. Also used to strip
+// the note when replaying a synthetic-only user turn (see collectLastUserText).
+const FALLBACK_NOTE_PREFIX = "[astrocode fallback]";
 
 export function parseModelString(
   value: string,
@@ -145,18 +152,31 @@ async function collectLastUserText(
     const entry = history[i];
     if (!entry || entry.info.role !== "user") continue;
 
-    const textParts: TextPartInput[] = [];
+    // Prefer the real (non-synthetic) user text, so retries don't stack our own
+    // "[astrocode fallback]" note. But a synthetic-only user turn still carries
+    // content worth replaying: opencode injects background-subagent results as a
+    // synthetic part, and a child session's delegation prompt may be synthetic
+    // too. So fall back to synthetic text with our own note stripped.
+    const visible: TextPartInput[] = [];
+    const synthetic: TextPartInput[] = [];
     for (const part of entry.parts) {
-      // Skip synthetic parts (including our own "[astrocode fallback]" note from
-      // a previous attempt) so retries don't stack notes.
-      if (isTextPart(part) && !(part as { synthetic?: boolean }).synthetic) {
-        textParts.push({ type: "text", text: part.text });
+      if (!isTextPart(part)) continue;
+      const textPart: TextPartInput = { type: "text", text: part.text };
+      if ((part as { synthetic?: boolean }).synthetic) {
+        if (!part.text.startsWith(FALLBACK_NOTE_PREFIX)) synthetic.push(textPart);
+      } else {
+        visible.push(textPart);
       }
     }
+    const textParts = visible.length > 0 ? visible : synthetic;
     if (textParts.length === 0) return undefined;
 
     const info = entry.info;
-    const agent = typeof info.agent === "string" ? info.agent : undefined;
+    // The registry is the safety net for a child session whose last user message
+    // carries no agent (synthetic-only delegation prompt).
+    const agent =
+      (typeof info.agent === "string" ? info.agent : undefined) ??
+      getChildSessionAgent(sessionID);
     const modelRef = info.model;
     const model = modelRef
       ? `${modelRef.providerID}/${modelRef.modelID}`
@@ -164,6 +184,28 @@ async function collectLastUserText(
     return { parts: textParts, agent, model };
   }
   return undefined;
+}
+
+// Abort the in-progress turn so opencode's own same-model retry loop stops
+// before we resubmit. Bounded so a hung abort request cannot stall the fallback.
+async function abortSession(
+  client: PluginInput["client"],
+  sessionID: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      client.session.abort({ path: { id: sessionID } }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } catch {
+    // abort is best-effort
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function dispatchFallback(
@@ -210,18 +252,40 @@ export async function dispatchFallback(
       markSameModelRetried(sessionID);
       return decision;
     }
-    if (!decision.retry || !decision.model) return decision;
+    if (!decision.retry || !decision.model) {
+      // A child (subagent) session with no fallback chain has nobody to report a
+      // terminal quota failure to: the parent's `task` tool call just blocks.
+      // Abort the child so the parent resolves immediately. oh-my-openagent does
+      // the same (hooks/runtime-fallback/message-update-handler.ts,
+      // "message.updated.subagent-quota-no-fallback").
+      if (
+        decision.reason === "no-fallback-models" &&
+        decision.errorClass === "terminal_quota" &&
+        isChildSession(sessionID)
+      ) {
+        await abortSession(client, sessionID);
+        return { ...decision, detail: "child-aborted" };
+      }
+      return decision;
+    }
 
     const parsed = parseModelString(decision.model);
     if (!parsed) {
       return { retry: false, reason: "bad-model-string" };
     }
 
+    // A terminal limit (subscription / quota / session limit) leaves the primary
+    // model unusable for a long while, so remember the switch and keep the
+    // session on the fallback for the following turns too (see session-model.ts).
+    if (decision.errorClass === "terminal_quota" && last.model) {
+      setSessionFallbackModel(sessionID, last.model, decision.model);
+    }
+
     const note: TextPartInput = {
       type: "text",
       synthetic: true,
       text:
-        `[astrocode fallback] The previous attempt failed with: ` +
+        `${FALLBACK_NOTE_PREFIX} The previous attempt failed with: ` +
         `${getErrorMessage(error) || "unknown error"}. ` +
         `Retrying automatically on ${decision.model}. ` +
         `Resume the task from where it stopped; do not restart from scratch.`,
@@ -229,31 +293,33 @@ export async function dispatchFallback(
 
     recordAttempt(sessionID, decision.model);
 
+    // Carry the agent too: opencode resolves the generation agent from the last
+    // user message, and a resubmission without it would fall back to the default
+    // agent (wrong for subagent/child sessions).
     const body = {
       model: parsed,
       parts: [note, ...last.parts],
+      ...(last.agent ? { agent: last.agent } : {}),
     };
 
-    let result = await client.session.prompt({
+    // Stop opencode's own same-model retry loop before resubmitting. Leaving it
+    // running keeps the session busy and made the previous (blocking) dispatch
+    // deadlock behind the provider's retry backoff.
+    await abortSession(client, sessionID);
+
+    // Non-blocking resubmission: the blocking `session.prompt` variant would hold
+    // this hook (and the in-flight guard) for the entire generation, so every
+    // later error/status event would be swallowed as "in-flight".
+    const result = await client.session.promptAsync({
       path: { id: sessionID },
       body,
     });
-
-    // The failed turn may have left the session marked busy; abort and retry the
-    // resubmission once before giving up.
-    if (result.error) {
-      try {
-        await client.session.abort({ path: { id: sessionID } });
-      } catch {
-        // abort is best-effort
-      }
-      result = await client.session.prompt({ path: { id: sessionID }, body });
-    }
 
     if (result.error) {
       return { retry: true, reason: "resubmit-failed", model: decision.model };
     }
     resetSameModelRetried(sessionID);
+    clearRetryKeys(sessionID);
     return decision;
   } catch {
     return { retry: false, reason: "error" };

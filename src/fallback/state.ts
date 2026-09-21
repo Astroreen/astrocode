@@ -13,6 +13,13 @@ interface SessionAttemptState {
 
 const states = new Map<string, SessionAttemptState>();
 
+// Dedup keys for `session.status` retry events. opencode emits a retry status on
+// every backoff tick, and the same failure may also surface as `session.error` /
+// `message.updated`; without this the same attempt would dispatch a fallback more
+// than once. Key mirrors oh-my-openagent: model + attempt + normalized message.
+const retryKeys = new Map<string, Set<string>>();
+const MAX_RETRY_KEYS_PER_SESSION = 64;
+
 // Exponential backoff: base cooldown doubles per consecutive failure, capped at
 // 2^5 (32x). Kept in sync with the idle-continuation backoff.
 export function effectiveCooldownSeconds(baseCooldownSeconds: number, failures: number): number {
@@ -90,8 +97,28 @@ export function resetFailures(sessionID: string): void {
 
 export function resetAttempts(sessionID: string): void {
   states.delete(sessionID);
+  retryKeys.delete(sessionID);
+}
+
+// Returns true the first time a given retry key is seen for a session, false for
+// duplicates. Bounded so a long retry storm cannot grow the set without limit.
+export function markRetryKey(sessionID: string, key: string): boolean {
+  let seen = retryKeys.get(sessionID);
+  if (!seen) {
+    seen = new Set();
+    retryKeys.set(sessionID, seen);
+  }
+  if (seen.has(key)) return false;
+  if (seen.size >= MAX_RETRY_KEYS_PER_SESSION) seen.clear();
+  seen.add(key);
+  return true;
+}
+
+export function clearRetryKeys(sessionID: string): void {
+  retryKeys.delete(sessionID);
 }
 
 export function clearAll(): void {
   states.clear();
+  retryKeys.clear();
 }

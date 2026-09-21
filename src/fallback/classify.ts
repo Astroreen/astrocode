@@ -18,6 +18,12 @@ export const RETRYABLE_ERROR_PATTERNS: RegExp[] = [
   /out.?of.?credits?/i,
   /credit.?balance/i,
   /insufficient.?credit/i,
+  // Provider-side credit/concurrency accounting (OpenRouter and proxies):
+  // "This request would exceed your available credits given your current
+  // in-flight requests". Transient — the in-flight window clears on its own —
+  // and it was previously unmatched, so subagent sessions never fell back.
+  /available.?credits/i,
+  /in.?flight.?requests/i,
   /billing/i,
   /payment.?required/i,
   /service.?unavailable/i,
