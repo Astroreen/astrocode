@@ -15,12 +15,17 @@
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { TextPartInput } from "@opencode-ai/sdk";
 import { getAgentConfigKey } from "../agents/personas";
-import { getErrorMessage, isRetryableError } from "./classify";
+import { areModelsEquivalent } from "./canonicalize";
+import { classifyError, getErrorMessage, isRetryableError } from "./classify";
+import type { ErrorClass } from "./classify";
 import type { FallbackConfig } from "./config";
 import {
   getAttemptCount,
   getLastFallbackModel,
+  hasSameModelRetried,
+  markSameModelRetried,
   recordAttempt,
+  resetSameModelRetried,
   shouldThrottle,
 } from "./state";
 
@@ -29,6 +34,7 @@ export interface FallbackDecision {
   reason: string;
   model?: string;
   detail?: string;
+  errorClass?: ErrorClass;
 }
 
 // One retry at a time per session.
@@ -61,14 +67,20 @@ export function resolveFallbackModels(
   return config.models;
 }
 
-// Pick the next unused candidate: skip the model that just failed and any model
-// already recorded from a previous attempt in this session.
+// Pick the next unused candidate: skip any model equivalent to the one that
+// just failed (`currentModel`) and any model already recorded from a previous
+// attempt in this session (`lastUsed`). Equivalence is canonical, so a
+// suffix-variant of the failed model is not treated as a real fallback.
 export function pickFallbackModel(
   candidates: string[],
   currentModel?: string,
+  lastUsed?: string,
 ): string | undefined {
-  const used = currentModel ? [currentModel] : [];
-  const remaining = candidates.filter((candidate) => !used.includes(candidate));
+  const remaining = candidates.filter(
+    (candidate) =>
+      !areModelsEquivalent(candidate, currentModel) &&
+      !areModelsEquivalent(candidate, lastUsed),
+  );
   if (remaining.length === 0) return undefined;
   return remaining[0];
 }
@@ -83,16 +95,23 @@ export function decideFallback(
   if (!config.enabled) {
     return { retry: false, reason: "disabled" };
   }
+  const errorClass = classifyError(error, config.retry_on_errors);
   if (!isRetryableError(error, config.retry_on_errors)) {
-    return { retry: false, reason: "not-retryable" };
+    return { retry: false, reason: "not-retryable", errorClass };
   }
   if (shouldThrottle(sessionID, config.max_attempts, config.cooldown_seconds)) {
-    return { retry: false, reason: "throttled" };
+    return { retry: false, reason: "throttled", errorClass };
   }
 
   const candidates = resolveFallbackModels(config, agent);
   if (candidates.length === 0) {
-    return { retry: false, reason: "no-fallback-models" };
+    return { retry: false, reason: "no-fallback-models", errorClass };
+  }
+
+  // Transient (non-terminal) errors get one same-model attempt first: let
+  // opencode's own retry handle it before we rotate the fallback chain.
+  if (errorClass === "non_terminal" && !hasSameModelRetried(sessionID)) {
+    return { retry: false, reason: "same-model-retry", errorClass };
   }
 
   // Advance through the chain by attempt count, then skip the current model.
@@ -100,12 +119,12 @@ export function decideFallback(
   const offset = attempts % candidates.length;
   const rotated = candidates.slice(offset).concat(candidates.slice(0, offset));
   const lastUsed = getLastFallbackModel(sessionID);
-  const model = pickFallbackModel(rotated, currentModel ?? lastUsed);
+  const model = pickFallbackModel(rotated, currentModel, lastUsed);
   if (!model) {
-    return { retry: false, reason: "chain-exhausted" };
+    return { retry: false, reason: "chain-exhausted", errorClass };
   }
 
-  return { retry: true, reason: "retry", model };
+  return { retry: true, reason: "retry", model, errorClass };
 }
 
 function isTextPart(part: unknown): part is { type: "text"; text: string } {
@@ -187,6 +206,10 @@ export async function dispatchFallback(
       last.agent,
       last.model,
     );
+    if (decision.reason === "same-model-retry") {
+      markSameModelRetried(sessionID);
+      return decision;
+    }
     if (!decision.retry || !decision.model) return decision;
 
     const parsed = parseModelString(decision.model);
@@ -230,6 +253,7 @@ export async function dispatchFallback(
     if (result.error) {
       return { retry: true, reason: "resubmit-failed", model: decision.model };
     }
+    resetSameModelRetried(sessionID);
     return decision;
   } catch {
     return { retry: false, reason: "error" };

@@ -7,6 +7,7 @@ interface SessionAttemptState {
   attempts: number;
   lastAttemptAt: number;
   model: string;
+  sameModelRetried: boolean;
 }
 
 const states = new Map<string, SessionAttemptState>();
@@ -33,7 +34,12 @@ export function recordAttempt(
 ): number {
   const state = states.get(sessionID);
   const attempts = state ? state.attempts + 1 : 1;
-  states.set(sessionID, { attempts, lastAttemptAt: now, model });
+  states.set(sessionID, {
+    attempts,
+    lastAttemptAt: now,
+    model,
+    sameModelRetried: state?.sameModelRetried ?? false,
+  });
   return attempts;
 }
 
@@ -43,6 +49,29 @@ export function getAttemptCount(sessionID: string): number {
 
 export function getLastFallbackModel(sessionID: string): string | undefined {
   return states.get(sessionID)?.model;
+}
+
+export function hasSameModelRetried(sessionID: string): boolean {
+  return states.get(sessionID)?.sameModelRetried ?? false;
+}
+
+export function markSameModelRetried(sessionID: string): void {
+  const state = states.get(sessionID);
+  if (state) {
+    state.sameModelRetried = true;
+    return;
+  }
+  states.set(sessionID, {
+    attempts: 0,
+    lastAttemptAt: Date.now(),
+    model: "",
+    sameModelRetried: true,
+  });
+}
+
+export function resetSameModelRetried(sessionID: string): void {
+  const state = states.get(sessionID);
+  if (state) state.sameModelRetried = false;
 }
 
 export function resetAttempts(sessionID: string): void {

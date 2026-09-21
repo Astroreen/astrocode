@@ -61,6 +61,37 @@ export const RETRYABLE_ERROR_PATTERNS: RegExp[] = [
   /\blimit\b/i,
 ];
 
+// Terminal quota / billing exhaustion: the current model (or provider account)
+// is out of budget, so retrying the SAME model is pointless — rotate to the next
+// fallback model immediately. Distinct from transient `non_terminal` errors
+// (rate limits, overloads) where opencode's own same-model retry should get one
+// shot first.
+export const TERMINAL_QUOTA_PATTERNS: RegExp[] = [
+  /quota.?exceeded/i,
+  /insufficient.?quota/i,
+  /exceeded.?your.?current.?quota/i,
+  /usage.?limit/i,
+  /limit.?reached/i,
+  /reached.?your.?limit/i,
+  /out.?of.?credits?/i,
+  /credit.?balance/i,
+  /insufficient.?credit/i,
+  /billing/i,
+  /payment.?required/i,
+  /session.?limit/i,
+  /hit your/i,
+  /you'?ve hit/i,
+  /resets?\s+\d/i,
+  // Chinese-localized quota wording.
+  /额度|配额|余额不足/,
+];
+
+export type ErrorClass =
+  | "terminal_quota"
+  | "non_terminal"
+  | "context_overflow"
+  | "not_retryable";
+
 // Errors that must never trigger a fallback retry regardless of anything else.
 const ABORT_ERROR_NAME = "MessageAbortedError";
 
@@ -143,4 +174,19 @@ export function isRetryableError(error: unknown, retryOnErrors: number[]): boole
   }
 
   return false;
+}
+
+// Additive classification on top of `isRetryableError` (whose behavior is
+// unchanged). Order matters: context-overflow is never retryable, terminal
+// quota rotates the model, and everything else retryable is a transient
+// `non_terminal` error that gets one same-model attempt first.
+export function classifyError(error: unknown, retryOnErrors: number[]): ErrorClass {
+  const message = getErrorMessage(error);
+
+  if (CONTEXT_OVERFLOW_PATTERN.test(message)) return "context_overflow";
+  if (TERMINAL_QUOTA_PATTERNS.some((pattern) => pattern.test(message))) {
+    return "terminal_quota";
+  }
+  if (isRetryableError(error, retryOnErrors)) return "non_terminal";
+  return "not_retryable";
 }

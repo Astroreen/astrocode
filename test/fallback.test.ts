@@ -1,12 +1,12 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { parseFallbackConfig, DEFAULT_FALLBACK_CONFIG } from "../src/fallback/config";
-import { isRetryableError, getStatusCode, getErrorMessage } from "../src/fallback/classify";
+import { isRetryableError, getStatusCode, getErrorMessage, classifyError } from "../src/fallback/classify";
 import {
   decideFallback,
   parseModelString,
   resolveFallbackModels,
 } from "../src/fallback";
-import { clearAll, recordAttempt, shouldThrottle } from "../src/fallback/state";
+import { clearAll, markSameModelRetried, recordAttempt, shouldThrottle } from "../src/fallback/state";
 
 function configWith(overrides: Record<string, unknown> = {}) {
   return parseFallbackConfig({ enabled: true, models: ["openai/gpt-4o"], ...overrides });
@@ -113,6 +113,17 @@ describe("classify", () => {
     expect(isRetryableError({ message: "invalid api key" }, [429])).toBe(false);
     expect(isRetryableError({}, [])).toBe(false);
   });
+
+  test("classifyError distinguishes terminal quota / non-terminal / overflow / fatal", () => {
+    expect(classifyError({ message: "You've hit your session limit · resets 4am" }, [429])).toBe(
+      "terminal_quota",
+    );
+    expect(classifyError({ message: "429 Too Many Requests" }, [429])).toBe("non_terminal");
+    expect(classifyError({ message: "maximum context length exceeded" }, [])).toBe(
+      "context_overflow",
+    );
+    expect(classifyError({ message: "syntax error" }, [])).toBe("not_retryable");
+  });
 });
 
 describe("model helpers", () => {
@@ -156,14 +167,20 @@ describe("decideFallback", () => {
   });
 
   test("retryable with chain -> picks first candidate", () => {
-    const decision = decideFallback(configWith(), "s1", { message: "overloaded" });
+    const decision = decideFallback(configWith(), "s1", { message: "usage limit exceeded" });
     expect(decision.retry).toBe(true);
     expect(decision.model).toBe("openai/gpt-4o");
   });
 
   test("skips the current model", () => {
     const config = configWith({ models: ["a/one", "b/two"] });
-    const decision = decideFallback(config, "s1", { message: "overloaded" }, undefined, "a/one");
+    const decision = decideFallback(
+      config,
+      "s1",
+      { message: "usage limit exceeded" },
+      undefined,
+      "a/one",
+    );
     expect(decision.model).toBe("b/two");
   });
 
@@ -183,8 +200,42 @@ describe("decideFallback", () => {
   test("rotates through the chain by attempt count", () => {
     const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
     recordAttempt("s1", "a/one");
+    markSameModelRetried("s1");
     const decision = decideFallback(config, "s1", { message: "overloaded" });
     expect(decision.retry).toBe(true);
     expect(decision.model).toBe("b/two");
+  });
+
+  test("non-terminal error with 0 attempts -> same-model-retry", () => {
+    const decision = decideFallback(configWith(), "s1", { message: "429 Too Many Requests" });
+    expect(decision.retry).toBe(false);
+    expect(decision.reason).toBe("same-model-retry");
+    expect(decision.errorClass).toBe("non_terminal");
+  });
+
+  test("non-terminal error after 1 attempt rotates the chain", () => {
+    const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
+    recordAttempt("s1", "a/one");
+    markSameModelRetried("s1");
+    const decision = decideFallback(config, "s1", { message: "429 Too Many Requests" });
+    expect(decision.retry).toBe(true);
+    expect(decision.model).toBe("b/two");
+    expect(decision.errorClass).toBe("non_terminal");
+  });
+
+  test("same-model retry is bounded to one per failure episode", () => {
+    const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
+    const error = { message: "429 Too Many Requests" };
+
+    const first = decideFallback(config, "s1", error);
+    expect(first.retry).toBe(false);
+    expect(first.reason).toBe("same-model-retry");
+
+    markSameModelRetried("s1");
+
+    const second = decideFallback(config, "s1", error);
+    expect(second.retry).toBe(true);
+    expect(second.model).toBe("a/one");
+    expect(second.reason).toBe("retry");
   });
 });
