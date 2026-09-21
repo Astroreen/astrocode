@@ -1,14 +1,15 @@
 // astrocode plugin entry point.
 //
-// Thin, model-aware layer: appends model-family guard text and the dynamic
-// Sisyphus prompt via `experimental.chat.system.transform`, tunes sampling via
-// `chat.params`, injects personas/commands via `config`, and performs real
-// mid-task model fallback via `event`.
+// Thin, model-aware layer: appends model-family guard text, the dynamic Sisyphus
+// prompt and env/date context via `experimental.chat.system.transform`; tunes
+// sampling via `chat.params`; injects personas/commands via `config`; performs
+// real mid-task model fallback via `event`; bridges extra skill directories.
 //
 // Personas are owned by the plugin (read from the shipped `agents/*.md`), so a
 // project only needs the plugin entry — no copying personas into
 // `.opencode/agents/`. astrocode's own settings (per-agent model, fallback chain,
-// colors) live in a dedicated `astrocode.jsonc` file, not in opencode.jsonc.
+// colors, sampling, skills, idle continuation) live in a dedicated
+// `astrocode.jsonc` file, not in opencode.jsonc.
 //
 // Defensive by design: every hook is wrapped so an unexpected/changed API shape
 // logs a warning and no-ops instead of crashing the host session.
@@ -16,20 +17,29 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "@opencode-ai/plugin";
-import { resolveFamily, isCheapSamplingFamily } from "./models/resolveFamily";
+import { resolveFamily, type ModelFamily } from "./models/resolveFamily";
+import { reasoningConfigForFamily, resolveSampling } from "./models/tuning";
 import { getGuards } from "./prompts/guards";
 import { dumpPrompt } from "./prompts/dump";
 import {
   isSisyphusSession,
   buildDynamicSisyphusPrompt,
 } from "./prompts/sisyphus/dispatch";
-import { dispatchFallback } from "./fallback";
+import { dispatchFallback, parseModelString } from "./fallback";
 import { clearAll as clearFallbackState } from "./fallback/state";
 import { buildBuiltinCommands } from "./commands";
 import { loadAstrocodeConfig } from "./config/astrocode";
+import { buildEnvContext, hasEnvContext } from "./env/context";
+import { linkExtraSkillDirs, discoverSkills, standardSkillDirs } from "./skills/extra";
 import {
-  buildNativeOverrides,
+  maybeContinueIdle,
+  resetIdleContinuationState,
+} from "./idle/continue";
+import {
+  DEFAULT_AGENT,
+  DEMOTED_NATIVE_AGENTS,
   loadPersonas,
+  toAgentConfigs,
   type PersonaDefinition,
 } from "./agents/personas";
 
@@ -37,9 +47,6 @@ const LOG_PREFIX = "[astrocode]";
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const AGENTS_DIR = join(PLUGIN_ROOT, "agents");
-
-const CHEAP_TEMPERATURE = 0.3;
-const CHEAP_TOP_P = 0.9;
 
 interface AgentConfigLike {
   description?: string;
@@ -71,6 +78,19 @@ function personaToAgentConfig(
   return config;
 }
 
+// Resolve a model string ("provider/model") to its family, tolerating garbage.
+function familyForModel(model: string | undefined): ModelFamily | undefined {
+  if (!model) return undefined;
+  const parsed = parseModelString(model);
+  if (!parsed) return undefined;
+  return resolveFamily({ providerID: parsed.providerID, modelID: parsed.modelID });
+}
+
+function truncate(value: string, max: number): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max - 1).trimEnd()}…`;
+}
+
 const astrocodePlugin: Plugin = async (input, options) => {
   const searchDirs = [input?.directory, input?.worktree].filter(
     (dir): dir is string => typeof dir === "string" && dir.length > 0,
@@ -78,19 +98,36 @@ const astrocodePlugin: Plugin = async (input, options) => {
   const astrocodeConfig = loadAstrocodeConfig(searchDirs, options);
   const fallbackConfig = astrocodeConfig.fallback;
 
-  // Personas are read once at plugin init; the native build/plan overrides are
-  // layered on top (build -> Sisyphus, plan -> Prometheus).
-  const basePersonas = loadPersonas(AGENTS_DIR);
-  const personas = { ...basePersonas, ...buildNativeOverrides(basePersonas) };
+  // Personas are read once at plugin init. They are registered under oh-my
+  // display names (see AGENT_DISPLAY_NAMES) so the UI matches oh-my-openagent;
+  // `build`/`plan` are demoted to hidden subagents and Sisyphus becomes the
+  // default primary agent.
+  const personas = loadPersonas(AGENTS_DIR);
+
+  // Bridge extra skill directories (e.g. a legacy oh-my skill cache) into the
+  // native opencode skills dir so they are discoverable again. Best-effort.
+  if (astrocodeConfig.skills.extraDirs.length > 0) {
+    try {
+      const report = linkExtraSkillDirs(astrocodeConfig.skills.extraDirs);
+      console.error(
+        `${LOG_PREFIX} skills: linked ${report.linked.length}` +
+          (report.linked.length ? ` (${report.linked.join(", ")})` : "") +
+          `, skipped ${report.skipped.length}`,
+      );
+    } catch (err) {
+      console.error(`${LOG_PREFIX} skills: link step failed; no-op`, err);
+    }
+  }
 
   return {
     dispose: async () => {
       clearFallbackState();
+      resetIdleContinuationState();
     },
 
-    // Own the agent roster + builtin commands. This replaces opencode's native
-    // `build`/`plan` with the Sisyphus/Prometheus personas and gives every agent
-    // its own color and optional model.
+    // Own the agent roster + builtin commands. Agents are keyed by their oh-my
+    // display name, so the TAB switcher/`@` menu/session header read identically
+    // to oh-my-openagent (e.g. "Sisyphus - ultraworker").
     config: async (cfg) => {
       try {
         const root = cfg as unknown as Record<string, unknown>;
@@ -98,16 +135,48 @@ const astrocodePlugin: Plugin = async (input, options) => {
           root.agent && typeof root.agent === "object"
             ? (root.agent as Record<string, AgentConfigLike>)
             : {};
-        root.agent = agents;
+        const defaultModel =
+          typeof root.model === "string" ? (root.model as string) : undefined;
 
-        for (const [name, persona] of Object.entries(personas)) {
-          const settings = astrocodeConfig.agents[name];
-          agents[name] = personaToAgentConfig(
-            persona,
-            settings?.model,
-            settings?.color,
-          );
+        const displayPersonas = toAgentConfigs(personas, (key, displayName) =>
+          astrocodeConfig.agents[key] ?? astrocodeConfig.agents[displayName],
+        );
+        for (const [displayName, persona] of Object.entries(displayPersonas)) {
+          const existing = agents[displayName] ?? {};
+          const agentConfig = {
+            ...personaToAgentConfig(
+              persona,
+              (persona as PersonaDefinition & { model?: string }).model,
+              undefined,
+            ),
+            ...existing,
+            description: persona.description,
+            mode: persona.mode,
+            prompt: persona.prompt,
+          };
+
+          // Family reasoning/thinking options (claude extended thinking, gpt
+          // reasoningEffort). Only when we know the effective model.
+          if (astrocodeConfig.reasoning.enabled) {
+            const agentModel =
+              (persona as PersonaDefinition & { model?: string }).model ??
+              astrocodeConfig.model ??
+              defaultModel;
+            const family = familyForModel(agentModel);
+            if (family) Object.assign(agentConfig, reasoningConfigForFamily(family));
+          }
+
+          agents[displayName] = agentConfig;
         }
+
+        // Demote opencode's builtin primaries to hidden subagents (oh-my does
+        // exactly this so `build`/`plan` no longer appear in the TAB switcher).
+        for (const demoted of DEMOTED_NATIVE_AGENTS) {
+          agents[demoted] = { ...(agents[demoted] ?? {}), mode: "subagent", hidden: true };
+        }
+
+        root.agent = agents;
+        root.default_agent = DEFAULT_AGENT;
 
         const commands =
           root.command && typeof root.command === "object"
@@ -116,12 +185,38 @@ const astrocodePlugin: Plugin = async (input, options) => {
         for (const [name, definition] of Object.entries(buildBuiltinCommands())) {
           if (!commands[name]) commands[name] = definition;
         }
+
+        // Surface discovered skills as slash commands. opencode registers skills
+        // for the model's `skill` tool but NOT as commands, so `/caveman` etc.
+        // otherwise appear "missing" in the UI. Each command just instructs the
+        // model to load the skill via its own tool. Never clobbers an existing
+        // command (user or builtin).
+        const skillDirs = standardSkillDirs(searchDirs);
+        for (const dir of astrocodeConfig.skills.extraDirs) skillDirs.push(dir);
+        const skills = discoverSkills(skillDirs);
+        let skillCommands = 0;
+        for (const skill of skills) {
+          if (commands[skill.name]) continue;
+          const summary = skill.description.replace(/\s+/g, " ").trim();
+          commands[skill.name] = {
+            description: truncate(
+              summary ? `Skill: ${summary}` : `Skill: ${skill.name}`,
+              160,
+            ),
+            template:
+              `Load the "${skill.name}" skill by calling the skill tool ` +
+              `(name: "${skill.name}"), then follow its instructions.\n\n$ARGUMENTS`,
+          };
+          skillCommands++;
+        }
+
         root.command = commands;
 
         console.error(
-          `${LOG_PREFIX} config: injected ${Object.keys(personas).length} agents, ` +
-            `${Object.keys(commands).length} commands, fallback=` +
-            `${fallbackConfig.enabled ? "on" : "off"}`,
+          `${LOG_PREFIX} config: injected ${Object.keys(displayPersonas).length} agents, ` +
+            `${Object.keys(commands).length} commands (${skillCommands} from skills), ` +
+            `default_agent="${DEFAULT_AGENT}", ` +
+            `fallback=${fallbackConfig.enabled ? "on" : "off"}`,
         );
       } catch (err) {
         console.error(`${LOG_PREFIX} config hook threw; no-op`, err);
@@ -129,25 +224,53 @@ const astrocodePlugin: Plugin = async (input, options) => {
     },
 
     // Real mid-task model fallback (docs/porting-plan.md "Fallback module
-    // design"). opencode surfaces a failed model call either as `session.error`
-    // or as a `message.updated` on an assistant message carrying `.error`; we
-    // handle both.
+    // design"). opencode surfaces a failed model call either as `session.error`,
+    // as a `message.updated` on an assistant message carrying `.error`, or (for
+    // retryable same-model retries) as `session.status` with type "retry".
     event: async ({ event }) => {
       try {
+        // Idle continuation is independent of fallback enablement.
+        if (
+          event.type === "session.idle" &&
+          astrocodeConfig.idleContinuation.enabled
+        ) {
+          const target = event.properties?.sessionID;
+          if (target) {
+            const result = await maybeContinueIdle(input.client, target, {
+              max: astrocodeConfig.idleContinuation.max,
+            });
+            console.error(
+              `${LOG_PREFIX} idle-continuation: ${result.reason}`,
+            );
+          }
+          return;
+        }
+
         if (!fallbackConfig.enabled) return;
+
+        const logDecision = (hook: string, decision: {
+          reason: string;
+          model?: string;
+          detail?: string;
+        }) => {
+          console.error(
+            `${LOG_PREFIX} fallback(${hook}): ${decision.reason}` +
+              (decision.model ? ` -> ${decision.model}` : "") +
+              (decision.detail ? ` (${decision.detail})` : ""),
+          );
+        };
 
         if (event.type === "session.error") {
           const target = event.properties?.sessionID;
           if (!target) return;
-          const decision = await dispatchFallback(
-            input.client,
-            fallbackConfig,
-            target,
-            event.properties?.error,
-          );
-          console.error(
-            `${LOG_PREFIX} fallback(session.error): ${decision.reason}` +
-              (decision.model ? ` -> ${decision.model}` : ""),
+          logDecision(
+            "session.error",
+            await dispatchFallback(
+              input.client,
+              fallbackConfig,
+              target,
+              event.properties?.error,
+            ),
           );
           return;
         }
@@ -156,15 +279,31 @@ const astrocodePlugin: Plugin = async (input, options) => {
           const info = event.properties?.info;
           if (info?.role !== "assistant") return;
           if (!info.error) return;
-          const decision = await dispatchFallback(
-            input.client,
-            fallbackConfig,
-            info.sessionID,
-            info.error,
+          logDecision(
+            "message.updated",
+            await dispatchFallback(
+              input.client,
+              fallbackConfig,
+              info.sessionID,
+              info.error,
+            ),
           );
-          console.error(
-            `${LOG_PREFIX} fallback(message.updated): ${decision.reason}` +
-              (decision.model ? ` -> ${decision.model}` : ""),
+          return;
+        }
+
+        // opencode retries the SAME model on rate limits before giving up. If the
+        // retry message is retryable, switch models proactively instead of
+        // waiting for the final failure.
+        if (event.type === "session.status") {
+          const status = event.properties?.status;
+          if (!status || status.type !== "retry") return;
+          const target = event.properties?.sessionID;
+          if (!target) return;
+          logDecision(
+            "session.status",
+            await dispatchFallback(input.client, fallbackConfig, target, {
+              message: status.message,
+            }),
           );
         }
       } catch (err) {
@@ -205,6 +344,12 @@ const astrocodePlugin: Plugin = async (input, options) => {
           }
         }
 
+        // Environment/date context (timezone, locale, today) for every agent,
+        // mirroring oh-my's applyEnvironmentContext.
+        if (!hasEnvContext(output.system)) {
+          output.system.push(buildEnvContext());
+        }
+
         dumpPrompt({
           hook: "experimental.chat.system.transform",
           sessionID: input?.sessionID ?? null,
@@ -236,9 +381,14 @@ const astrocodePlugin: Plugin = async (input, options) => {
           modelID: input?.model?.id ?? "",
         });
 
-        if (isCheapSamplingFamily(family)) {
-          output.temperature = CHEAP_TEMPERATURE;
-          output.topP = CHEAP_TOP_P;
+        const sampling = resolveSampling(family, astrocodeConfig.sampling);
+        if (sampling) {
+          if (sampling.temperature !== undefined) {
+            output.temperature = sampling.temperature;
+          }
+          if (sampling.topP !== undefined) {
+            output.topP = sampling.topP;
+          }
         }
       } catch (err) {
         console.error(`${LOG_PREFIX} chat.params threw; no-op`, err);

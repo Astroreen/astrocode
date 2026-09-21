@@ -34,7 +34,11 @@ describe("astrocode plugin — experimental.chat.system.transform", () => {
       output as any,
     );
 
-    expect(output.system).toEqual(["BASE"]);
+    // No defensive guard for claude, and the base entry is still first/untouched.
+    expect(output.system[0]).toBe("BASE");
+    expect(output.system.some((s: string) => s.includes("tool_loop_guard"))).toBe(false);
+    // Env/date context is appended for every agent.
+    expect(output.system.some((s: string) => s.includes("<omo-env>"))).toBe(true);
   });
 
   test("malformed output (no system array) -> graceful no-op", async () => {
