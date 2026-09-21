@@ -1,0 +1,5 @@
+export const ABORT_WINDOW_MS = 3000;
+export const CONTINUATION_COOLDOWN_MS = 5000;
+export const MAX_CONSECUTIVE_FAILURES = 5;
+export const FAILURE_RESET_WINDOW_MS = 5 * 60 * 1000;
+export const MAX_BACKOFF_EXPONENT = 5;

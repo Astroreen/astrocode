@@ -6,7 +6,7 @@ import {
   parseModelString,
   resolveFallbackModels,
 } from "../src/fallback";
-import { clearAll, markSameModelRetried, recordAttempt, shouldThrottle } from "../src/fallback/state";
+import { clearAll, markSameModelRetried, recordAttempt, shouldThrottle, effectiveCooldownSeconds } from "../src/fallback/state";
 
 function configWith(overrides: Record<string, unknown> = {}) {
   return parseFallbackConfig({ enabled: true, models: ["openai/gpt-4o"], ...overrides });
@@ -142,6 +142,15 @@ describe("model helpers", () => {
     expect(resolveFallbackModels(config, "oracle")).toEqual(["x/y"]);
     expect(resolveFallbackModels(config, "explore")).toEqual(["openai/gpt-4o"]);
     expect(resolveFallbackModels(config)).toEqual(["openai/gpt-4o"]);
+  });
+});
+
+describe("effectiveCooldownSeconds", () => {
+  test("doubles per failure, capped at 2^5", () => {
+    expect(effectiveCooldownSeconds(60, 0)).toBe(60);
+    expect(effectiveCooldownSeconds(60, 1)).toBe(120);
+    expect(effectiveCooldownSeconds(60, 5)).toBe(1920);
+    expect(effectiveCooldownSeconds(60, 9)).toBe(1920);
   });
 });
 

@@ -8,9 +8,16 @@ interface SessionAttemptState {
   lastAttemptAt: number;
   model: string;
   sameModelRetried: boolean;
+  consecutiveFailures: number;
 }
 
 const states = new Map<string, SessionAttemptState>();
+
+// Exponential backoff: base cooldown doubles per consecutive failure, capped at
+// 2^5 (32x). Kept in sync with the idle-continuation backoff.
+export function effectiveCooldownSeconds(baseCooldownSeconds: number, failures: number): number {
+  return baseCooldownSeconds * 2 ** Math.min(failures, 5);
+}
 
 // True when the session has exhausted max_attempts or the cooldown between
 // attempts has not yet elapsed.
@@ -24,7 +31,7 @@ export function shouldThrottle(
   if (!state) return false;
   if (state.attempts >= maxAttempts) return true;
   const elapsedSeconds = (now - state.lastAttemptAt) / 1000;
-  return elapsedSeconds < cooldownSeconds;
+  return elapsedSeconds < effectiveCooldownSeconds(cooldownSeconds, state.consecutiveFailures);
 }
 
 export function recordAttempt(
@@ -39,6 +46,7 @@ export function recordAttempt(
     lastAttemptAt: now,
     model,
     sameModelRetried: state?.sameModelRetried ?? false,
+    consecutiveFailures: (state?.consecutiveFailures ?? 0) + 1,
   });
   return attempts;
 }
@@ -66,12 +74,18 @@ export function markSameModelRetried(sessionID: string): void {
     lastAttemptAt: Date.now(),
     model: "",
     sameModelRetried: true,
+    consecutiveFailures: 0,
   });
 }
 
 export function resetSameModelRetried(sessionID: string): void {
   const state = states.get(sessionID);
   if (state) state.sameModelRetried = false;
+}
+
+export function resetFailures(sessionID: string): void {
+  const state = states.get(sessionID);
+  if (state) state.consecutiveFailures = 0;
 }
 
 export function resetAttempts(sessionID: string): void {
