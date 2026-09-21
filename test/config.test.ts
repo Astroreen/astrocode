@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadAstrocodeConfig, sanitizeJsonc } from "../src/config/astrocode";
@@ -104,5 +104,91 @@ describe("loadAstrocodeConfig", () => {
     expect(config.fallback.enabled).toBe(true);
     expect(config.fallback.models).toEqual([]);
     expect(config.agents).toEqual({});
+  });
+});
+
+describe("loadAstrocodeConfig walk-up layers", () => {
+  function makeLayers(): { root: string; home: string; project: string } {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-layers-"));
+    const home = join(root, "home");
+    const project = join(home, "project");
+    mkdirSync(project, { recursive: true });
+    return { root, home, project };
+  }
+
+  test("nearest layer wins for fallback.max_attempts", () => {
+    const { root, home, project } = makeLayers();
+    try {
+      writeFileSync(
+        join(home, "astrocode.json"),
+        JSON.stringify({ fallback: { max_attempts: 5 } }),
+      );
+      writeFileSync(
+        join(project, "astrocode.json"),
+        JSON.stringify({ fallback: { max_attempts: 2 } }),
+      );
+
+      const config = loadAstrocodeConfig([project]);
+      expect(config.fallback.max_attempts).toBe(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("per-agent merge: nearest model wins, farther color survives", () => {
+    const { root, home, project } = makeLayers();
+    try {
+      writeFileSync(
+        join(home, "astrocode.json"),
+        JSON.stringify({
+          agents: { sisyphus: { model: "home/model", color: "#00CED1" } },
+        }),
+      );
+      writeFileSync(
+        join(project, "astrocode.json"),
+        JSON.stringify({ agents: { sisyphus: { model: "project/model" } } }),
+      );
+
+      const config = loadAstrocodeConfig([project]);
+      expect(config.agents.sisyphus?.model).toBe("project/model");
+      expect(config.agents.sisyphus?.color).toBe("#00CED1");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("skills.extraDirs is fully replaced by the nearest layer", () => {
+    const { root, home, project } = makeLayers();
+    try {
+      writeFileSync(
+        join(home, "astrocode.json"),
+        JSON.stringify({ skills: { extraDirs: ["/far/a", "/far/b"] } }),
+      );
+      writeFileSync(
+        join(project, "astrocode.json"),
+        JSON.stringify({ skills: { extraDirs: ["/near/c"] } }),
+      );
+
+      const config = loadAstrocodeConfig([project]);
+      expect(config.skills.extraDirs).toEqual(["/near/c"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("malformed nearest layer is skipped, farther layer still applies", () => {
+    const { root, home, project } = makeLayers();
+    try {
+      writeFileSync(
+        join(home, "astrocode.json"),
+        JSON.stringify({ fallback: { max_attempts: 5 } }),
+      );
+      writeFileSync(join(project, "astrocode.json"), "{ not valid json ");
+
+      const config = loadAstrocodeConfig([project]);
+      expect(config.fallback.max_attempts).toBe(5);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

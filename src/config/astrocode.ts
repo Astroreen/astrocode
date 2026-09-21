@@ -29,7 +29,8 @@
 // honored and override the file.
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { parseFallbackConfig, type FallbackConfig } from "../fallback/config";
 import type { SamplingSettings } from "../models/tuning";
 
@@ -195,22 +196,130 @@ function findConfigFile(searchDirs: string[]): string | undefined {
   return undefined;
 }
 
+// Walk from `projectDir` up to `stopDir` (inclusive) or the filesystem root,
+// collecting the first config file found at each level. Returned paths are
+// ordered farthest-first (root-most first, project dir last) so that later
+// entries are the nearest layers. Never throws.
+export function collectConfigLayers(
+  projectDir: string,
+  stopDir: string = homedir(),
+): string[] {
+  const dirs: string[] = [];
+  try {
+    let current = projectDir;
+    for (let i = 0; i < 1000; i += 1) {
+      dirs.push(current);
+      if (current === stopDir) break;
+      const parent = dirname(current);
+      if (!parent || parent === current) break;
+      current = parent;
+    }
+  } catch {
+    // ignore malformed paths
+  }
+
+  const layers: string[] = [];
+  const seen = new Set<string>();
+  for (let i = dirs.length - 1; i >= 0; i -= 1) {
+    let found: string | undefined;
+    try {
+      found = findConfigFile([dirs[i]]);
+    } catch {
+      found = undefined;
+    }
+    if (found && !seen.has(found)) {
+      seen.add(found);
+      layers.push(found);
+    }
+  }
+  return layers;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+// Shallow-merge per-agent maps: later (nearer) layers win per field, arrays
+// (e.g. fallback_models) are replaced wholesale, never concatenated.
+function mergeAgentMaps(
+  far: unknown,
+  near: unknown,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = isPlainObject(far) ? { ...far } : {};
+  if (!isPlainObject(near)) return out;
+  for (const [name, settings] of Object.entries(near)) {
+    if (!isPlainObject(settings)) continue;
+    const prev = isPlainObject(out[name]) ? out[name] : {};
+    out[name] = { ...prev, ...settings };
+  }
+  return out;
+}
+
+// Merge config layers ordered farthest-first; later (nearer) layers win.
+// Top-level keys are shallow-merged; `agents`/`fallback.agents` are merged
+// per agent; `fallback`/`sampling` are shallow-merged. Arrays are replaced by
+// the nearest layer that defines them. Malformed shapes are treated as absent.
+function mergeConfigLayers(
+  layers: Record<string, unknown>[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const layer of layers) {
+    if (!isPlainObject(layer)) continue;
+    for (const [key, value] of Object.entries(layer)) {
+      if (key === "agents") {
+        out.agents = mergeAgentMaps(out.agents, value);
+      } else if (key === "fallback") {
+        const far = isPlainObject(out.fallback) ? out.fallback : {};
+        const merged: Record<string, unknown> = { ...far };
+        if (isPlainObject(value)) {
+          for (const [fk, fv] of Object.entries(value)) {
+            if (fk === "agents") {
+              merged.agents = mergeAgentMaps(merged.agents, fv);
+            } else {
+              merged[fk] = fv;
+            }
+          }
+        }
+        out.fallback = merged;
+      } else if (key === "sampling") {
+        const far = isPlainObject(out.sampling) ? out.sampling : {};
+        out.sampling = isPlainObject(value) ? { ...far, ...value } : far;
+      } else {
+        out[key] = value;
+      }
+    }
+  }
+  return out;
+}
+
 export function loadAstrocodeConfig(
   searchDirs: string[],
   inlineOptions?: unknown,
 ): AstrocodeConfig {
   let fileRaw: Record<string, unknown> = {};
-  const path = findConfigFile(searchDirs);
-  if (path) {
-    try {
-      const parsed = JSON.parse(sanitizeJsonc(readFileSync(path, "utf8")));
-      if (parsed && typeof parsed === "object") {
-        fileRaw = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // malformed config file: fall back to defaults + inline options
+  const layerPaths: string[] = [];
+  const seenLayers = new Set<string>();
+  for (const dir of searchDirs) {
+    if (!dir) continue;
+    for (const layerPath of collectConfigLayers(dir)) {
+      if (seenLayers.has(layerPath)) continue;
+      seenLayers.add(layerPath);
+      layerPaths.push(layerPath);
     }
   }
+
+  const parsedLayers: Record<string, unknown>[] = [];
+  for (const layerPath of layerPaths) {
+    try {
+      const parsed = JSON.parse(sanitizeJsonc(readFileSync(layerPath, "utf8")));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        parsedLayers.push(parsed as Record<string, unknown>);
+      }
+    } catch {
+      // malformed layer: skip it, farther layers still apply
+    }
+  }
+  fileRaw = mergeConfigLayers(parsedLayers);
 
   const inline =
     inlineOptions && typeof inlineOptions === "object"
