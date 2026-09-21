@@ -31,6 +31,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseFallbackConfig, type FallbackConfig } from "../fallback/config";
+import type { SamplingSettings } from "../models/tuning";
+
+export type { SamplingSettings };
 
 export interface AgentSettings {
   model?: string;
@@ -41,11 +44,25 @@ export interface AgentSettings {
 export interface AstrocodeConfig {
   fallback: FallbackConfig;
   agents: Record<string, AgentSettings>;
+  /** Global default model applied to agents with no per-agent `model`. */
+  model?: string;
+  /** Per-family sampling overrides; unknown families fall back to defaults. */
+  sampling: Record<string, SamplingSettings>;
+  /** Extra directories scanned for `<name>/SKILL.md` and symlinked in. */
+  skills: { extraDirs: string[] };
+  /** Opt-in idle continuation when a session stops with unfinished todos. */
+  idleContinuation: { enabled: boolean; max?: number };
+  /** Inject family reasoning/thinking options (claude thinking, gpt effort). */
+  reasoning: { enabled: boolean };
 }
 
 export const EMPTY_ASTROCODE_CONFIG: AstrocodeConfig = {
   fallback: parseFallbackConfig(undefined),
   agents: {},
+  sampling: {},
+  skills: { extraDirs: [] },
+  idleContinuation: { enabled: false },
+  reasoning: { enabled: true },
 };
 
 const CONFIG_FILE_NAMES = [
@@ -147,6 +164,26 @@ function parseAgentSettings(raw: unknown): Record<string, AgentSettings> {
   return out;
 }
 
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseSampling(raw: unknown): Record<string, SamplingSettings> {
+  const out: Record<string, SamplingSettings> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [family, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const entry = value as Record<string, unknown>;
+    const settings: SamplingSettings = {};
+    const temperature = asNumber(entry.temperature);
+    if (temperature !== undefined) settings.temperature = temperature;
+    const topP = asNumber(entry.topP ?? entry.top_p);
+    if (topP !== undefined) settings.topP = topP;
+    if (Object.keys(settings).length > 0) out[family] = settings;
+  }
+  return out;
+}
+
 function findConfigFile(searchDirs: string[]): string | undefined {
   for (const dir of searchDirs) {
     if (!dir) continue;
@@ -194,8 +231,47 @@ export function loadAstrocodeConfig(
     agents[name] = { ...(fileAgents[name] ?? {}), ...settings };
   }
 
+  const sampling = {
+    ...parseSampling(fileRaw.sampling),
+    ...parseSampling(inline.sampling),
+  };
+
+  const fileSkills = (fileRaw.skills as Record<string, unknown>) ?? {};
+  const inlineSkills = (inline.skills as Record<string, unknown>) ?? {};
+  const extraDirs =
+    asStringList(inlineSkills.extraDirs ?? inlineSkills.extra_dirs) ??
+    asStringList(fileSkills.extraDirs ?? fileSkills.extra_dirs) ??
+    [];
+
+  const fileIdle = (fileRaw.idleContinuation as Record<string, unknown>) ?? {};
+  const inlineIdle = (inline.idleContinuation as Record<string, unknown>) ?? {};
+  const idleEnabled =
+    typeof inlineIdle.enabled === "boolean"
+      ? inlineIdle.enabled
+      : typeof fileIdle.enabled === "boolean"
+        ? fileIdle.enabled
+        : false;
+  const idleMax = asNumber(inlineIdle.max ?? fileIdle.max);
+
+  const fileReasoning = (fileRaw.reasoning as Record<string, unknown>) ?? {};
+  const inlineReasoning = (inline.reasoning as Record<string, unknown>) ?? {};
+  const reasoningEnabled =
+    typeof inlineReasoning.enabled === "boolean"
+      ? inlineReasoning.enabled
+      : typeof fileReasoning.enabled === "boolean"
+        ? fileReasoning.enabled
+        : true;
+
   return {
     fallback: parseFallbackConfig(mergedFallback),
     agents,
+    model: asString(inline.model) ?? asString(fileRaw.model),
+    sampling,
+    skills: { extraDirs },
+    idleContinuation:
+      idleMax !== undefined
+        ? { enabled: idleEnabled, max: idleMax }
+        : { enabled: idleEnabled },
+    reasoning: { enabled: reasoningEnabled },
   };
 }

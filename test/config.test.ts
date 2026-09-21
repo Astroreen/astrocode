@@ -71,6 +71,33 @@ describe("loadAstrocodeConfig", () => {
     expect(withInline.agents.oracle?.fallbackModels).toEqual(["a/b"]);
   });
 
+  test("parses sampling, skills, idleContinuation and reasoning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-extras-"));
+    mkdirSync(join(dir, ".opencode"), { recursive: true });
+    writeFileSync(
+      join(dir, ".opencode", "astrocode.jsonc"),
+      `{
+        "sampling": { "claude": { "temperature": 0.4, "topP": 0.8 } },
+        "skills": { "extraDirs": ["/tmp/skills-a", "/tmp/skills-b"] },
+        "idleContinuation": { "enabled": true, "max": 5 },
+        "reasoning": { "enabled": false }
+      }`,
+    );
+
+    const config = loadAstrocodeConfig([dir]);
+    expect(config.sampling.claude).toEqual({ temperature: 0.4, topP: 0.8 });
+    expect(config.skills.extraDirs).toEqual(["/tmp/skills-a", "/tmp/skills-b"]);
+    expect(config.idleContinuation).toEqual({ enabled: true, max: 5 });
+    expect(config.reasoning.enabled).toBe(false);
+
+    // Defaults when absent.
+    const defaults = loadAstrocodeConfig([]);
+    expect(defaults.sampling).toEqual({});
+    expect(defaults.skills.extraDirs).toEqual([]);
+    expect(defaults.idleContinuation.enabled).toBe(false);
+    expect(defaults.reasoning.enabled).toBe(true);
+  });
+
   test("missing file yields defaults plus inline options", () => {
     const dir = mkdtempSync(join(tmpdir(), "astrocode-empty-"));
     const config = loadAstrocodeConfig([dir], { fallback: { enabled: true } });
