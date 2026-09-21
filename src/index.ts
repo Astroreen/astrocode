@@ -18,7 +18,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "@opencode-ai/plugin";
 import { resolveFamily, type ModelFamily } from "./models/resolveFamily";
-import { reasoningConfigForFamily, resolveSampling } from "./models/tuning";
+import {
+  reasoningConfigForFamily,
+  resolveSampling,
+  splitReasoningSuffix,
+  isReasoningLevel,
+} from "./models/tuning";
 import { getGuards } from "./prompts/guards";
 import { dumpPrompt } from "./prompts/dump";
 import {
@@ -30,11 +35,22 @@ import { clearAll as clearFallbackState } from "./fallback/state";
 import { buildBuiltinCommands } from "./commands";
 import { loadAstrocodeConfig } from "./config/astrocode";
 import { buildEnvContext, hasEnvContext } from "./env/context";
-import { linkExtraSkillDirs, discoverSkills, standardSkillDirs } from "./skills/extra";
+import {
+  linkExtraSkillDirs,
+  discoverSkillsWithPriority,
+  standardSkillSources,
+} from "./skills/extra";
 import {
   maybeContinueIdle,
   resetIdleContinuationState,
+  recordAbort,
 } from "./idle/continue";
+import {
+  findAgentsMdFiles,
+  buildAgentsMdContext,
+  hasAgentsMdContext,
+} from "./context/agentsmd";
+import { getErrorName } from "./fallback/classify";
 import {
   DEFAULT_AGENT,
   DEMOTED_NATIVE_AGENTS,
@@ -47,6 +63,7 @@ const LOG_PREFIX = "[astrocode]";
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const AGENTS_DIR = join(PLUGIN_ROOT, "agents");
+const BUNDLED_SKILLS_DIR = join(PLUGIN_ROOT, "skills", "builtin");
 
 interface AgentConfigLike {
   description?: string;
@@ -92,6 +109,7 @@ function truncate(value: string, max: number): string {
 }
 
 const astrocodePlugin: Plugin = async (input, options) => {
+  const projectDir = input?.directory;
   const searchDirs = [input?.directory, input?.worktree].filter(
     (dir): dir is string => typeof dir === "string" && dir.length > 0,
   );
@@ -162,8 +180,17 @@ const astrocodePlugin: Plugin = async (input, options) => {
               (persona as PersonaDefinition & { model?: string }).model ??
               astrocodeConfig.model ??
               defaultModel;
-            const family = familyForModel(agentModel);
-            if (family) Object.assign(agentConfig, reasoningConfigForFamily(family));
+            const { base, level } = splitReasoningSuffix(agentModel ?? "");
+            const family = familyForModel(base);
+            if (family) {
+              Object.assign(
+                agentConfig,
+                reasoningConfigForFamily(
+                  family,
+                  level && isReasoningLevel(level) ? level : undefined,
+                ),
+              );
+            }
           }
 
           agents[displayName] = agentConfig;
@@ -191,9 +218,11 @@ const astrocodePlugin: Plugin = async (input, options) => {
         // otherwise appear "missing" in the UI. Each command just instructs the
         // model to load the skill via its own tool. Never clobbers an existing
         // command (user or builtin).
-        const skillDirs = standardSkillDirs(searchDirs);
-        for (const dir of astrocodeConfig.skills.extraDirs) skillDirs.push(dir);
-        const skills = discoverSkills(skillDirs);
+        const sources = standardSkillSources(searchDirs, BUNDLED_SKILLS_DIR);
+        for (const dir of astrocodeConfig.skills.extraDirs) {
+          sources.push({ dir, priority: 35, label: "extra" });
+        }
+        const skills = discoverSkillsWithPriority(sources);
         let skillCommands = 0;
         for (const skill of skills) {
           if (commands[skill.name]) continue;
@@ -244,6 +273,17 @@ const astrocodePlugin: Plugin = async (input, options) => {
             );
           }
           return;
+        }
+
+        // Abort detection is independent of fallback enablement: a user
+        // cancellation must suppress idle continuation.
+        if (event.type === "session.error") {
+          const errName = getErrorName(event.properties?.error);
+          if (errName === "MessageAbortedError" || errName === "AbortError") {
+            if (event.properties?.sessionID) {
+              recordAbort(event.properties.sessionID);
+            }
+          }
         }
 
         if (!fallbackConfig.enabled) return;
@@ -338,7 +378,10 @@ const astrocodePlugin: Plugin = async (input, options) => {
         // docs/porting-plan.md). `agents/sisyphus.md` is the static baseline;
         // here we append family-aware, runtime-accurate delta content.
         if (isSisyphusSession(output.system)) {
-          const dynamicPrompt = buildDynamicSisyphusPrompt(family);
+          const dynamicPrompt = buildDynamicSisyphusPrompt(
+            family,
+            input?.model?.id ?? "",
+          );
           if (!output.system.includes(dynamicPrompt)) {
             output.system.push(dynamicPrompt);
           }
@@ -348,6 +391,12 @@ const astrocodePlugin: Plugin = async (input, options) => {
         // mirroring oh-my's applyEnvironmentContext.
         if (!hasEnvContext(output.system)) {
           output.system.push(buildEnvContext());
+        }
+
+        // AGENTS.md walk-up context (nearest first), idempotent via its marker.
+        if (projectDir && !hasAgentsMdContext(output.system)) {
+          const files = findAgentsMdFiles(projectDir);
+          if (files.length > 0) output.system.push(buildAgentsMdContext(files));
         }
 
         dumpPrompt({

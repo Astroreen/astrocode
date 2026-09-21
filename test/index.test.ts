@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import astrocodePlugin from "../src/index";
+import {
+  maybeContinueIdle,
+  resetIdleContinuationState,
+} from "../src/idle/continue";
 
 describe("astrocode plugin — experimental.chat.system.transform", () => {
   test("appends guards for cheap-openrouter model, preserves base", async () => {
@@ -144,5 +151,87 @@ describe("astrocode plugin — chat.params", () => {
     await expect(
       hooks["chat.params"]!(input as any, null as any),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("astrocode plugin — AGENTS.md directory context", () => {
+  test("injects [Directory Context: once and is idempotent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-agents-"));
+    try {
+      writeFileSync(join(dir, "AGENTS.md"), "# Project Rules\nbe nice\n");
+      const hooks = await astrocodePlugin({ directory: dir } as any);
+      const output = { system: ["BASE"] };
+      const input = {
+        sessionID: "agents-1",
+        model: { id: "claude-sonnet-4-6", providerID: "anthropic" } as any,
+      };
+
+      await hooks["experimental.chat.system.transform"]!(
+        input as any,
+        output as any,
+      );
+      const first = output.system.filter((s) =>
+        s.includes("[Directory Context:"),
+      ).length;
+      expect(first).toBe(1);
+
+      await hooks["experimental.chat.system.transform"]!(
+        input as any,
+        output as any,
+      );
+      const second = output.system.filter((s) =>
+        s.includes("[Directory Context:"),
+      ).length;
+      expect(second).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("no directory -> no AGENTS.md injection", async () => {
+    const hooks = await astrocodePlugin({} as any);
+    const output = { system: ["BASE"] };
+    const input = {
+      sessionID: "agents-2",
+      model: { id: "claude-sonnet-4-6", providerID: "anthropic" } as any,
+    };
+
+    await hooks["experimental.chat.system.transform"]!(
+      input as any,
+      output as any,
+    );
+
+    expect(
+      output.system.some((s) => s.includes("[Directory Context:")),
+    ).toBe(false);
+  });
+});
+
+describe("astrocode plugin — abort detection", () => {
+  test("session.error MessageAbortedError records the abort window", async () => {
+    resetIdleContinuationState();
+    const client = {
+      session: {
+        todo: async () => ({
+          data: [{ status: "pending", content: "task" }],
+        }),
+        prompt: async () => ({ data: {} }),
+      },
+    } as any;
+
+    const hooks = await astrocodePlugin({ client } as any);
+    await hooks.event!({
+      event: {
+        type: "session.error",
+        properties: {
+          sessionID: "abort-s1",
+          error: { name: "MessageAbortedError" },
+        },
+      },
+    } as any);
+
+    const result = await maybeContinueIdle(client, "abort-s1");
+    expect(result.continued).toBe(false);
+    expect(result.reason).toBe("abort-window");
   });
 });
