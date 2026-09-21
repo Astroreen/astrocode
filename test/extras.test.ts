@@ -7,6 +7,7 @@ import {
   linkExtraSkillDirs,
   discoverSkills,
   discoverSkillsWithPriority,
+  standardSkillSources,
 } from "../src/skills/extra";
 import {
   maybeContinueIdle,
@@ -119,6 +120,45 @@ describe("discoverSkills", () => {
       const skills = discoverSkills([first, second]);
       expect(skills.length).toBe(1);
       expect(skills[0]?.location).toBe(join(first, "dup", "SKILL.md"));
+    } finally {
+      spy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("bundled builtin skills are discovered", () => {
+    const bundledDir = join(import.meta.dir, "..", "skills", "builtin");
+    const skills = discoverSkillsWithPriority(standardSkillSources([], bundledDir));
+    const bundled = skills.filter((skill) => skill.source === "builtin");
+    const names = bundled.map((skill) => skill.name);
+    expect(names).toContain("commit-message");
+    expect(names).toContain("code-review");
+    expect(names).toContain("verify-before-done");
+    expect(bundled.length).toBe(3);
+    for (const skill of bundled) {
+      expect(skill.priority).toBe(5);
+    }
+  });
+
+  test("project skill overrides a bundled skill of the same name", () => {
+    const bundledDir = join(import.meta.dir, "..", "skills", "builtin");
+    const root = mkdtempSync(join(tmpdir(), "astrocode-override-"));
+    const project = join(root, "project");
+    const projectSkill = join(project, ".opencode", "skills", "commit-message");
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(
+      join(projectSkill, "SKILL.md"),
+      "---\nname: commit-message\ndescription: project override\n---\nbody\n",
+    );
+
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const skills = discoverSkillsWithPriority(standardSkillSources([project], bundledDir));
+      const winner = skills.find((skill) => skill.name === "commit-message");
+      expect(winner?.location).toBe(join(projectSkill, "SKILL.md"));
+      expect(winner?.source).toBe("project-opencode");
+      expect(winner?.priority).toBe(60);
+      expect(winner?.location).not.toBe(join(bundledDir, "commit-message", "SKILL.md"));
     } finally {
       spy.mockRestore();
       rmSync(root, { recursive: true, force: true });
