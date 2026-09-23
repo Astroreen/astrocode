@@ -5,40 +5,131 @@
   //
   // Agent keys may be either opencode display names (what you see in the TAB
   // switcher, e.g. "Sisyphus - ultraworker") or canonical keys ("sisyphus").
-  //
+
   // Global default model for agents that do not set their own `model`
   // (also drives family reasoning options like claude extended thinking).
-  "model": "anthropic/claude-sonnet-4-6",
+  "model": "anthropic/claude-sonnet-5",
+
+  // ── Agents (all 11 shipped personas) ────────────────────────────────────
+  // Per-agent `model` / `fallback_models` / `color`.
+  // `fallback_models` fully replaces the global fallback chain for that agent
+  // (no merge). Color overrides the oh-my palette default (DEFAULT_COLORS in
+  // src/agents/personas.ts).
   "agents": {
-    // Default primary agent: Claude via the meridian proxy, with deepseek flash
-    // as its own fallback chain.
+    // Primary orchestrator.
     "Sisyphus - ultraworker": {
-      "model": "anthropic/claude-sonnet-4-6",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"]
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#00CED1"
     },
-    "Prometheus - Plan Builder": {
-      "model": "anthropic/claude-sonnet-4-6",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"]
+    // Cheap focused executor for 1-2 file edits.
+    "Sisyphus-Junior": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#16A085"
     },
+    // Autonomous deep worker — expensive; same chain as the rest.
+    "Hephaestus - Deep Agent": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#FF6B35"
+    },
+    // Plan executor (target of /start-work).
     "Atlas - Plan Executor": {
-      "model": "anthropic/claude-sonnet-4-6",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"]
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#3498DB"
+    },
+    // Planning consultant — writes decision-complete work plans.
+    "Prometheus - Plan Builder": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#9B59B6"
+    },
+    // Pre-planning risk analysis.
+    "Metis - Plan Consultant": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#F1C40F"
+    },
+    // Plan critic — verifies executability of written plans.
+    "Momus - Plan Critic": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#E67E22"
+    },
+    // Read-only high-IQ consultant for hard debugging / architecture.
+    "oracle": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#E74C3C"
+    },
+    // Cheap contextual grep for the codebase.
+    "explore": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#2ECC71"
+    },
+    // External docs / OSS / web research.
+    "librarian": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#1ABC9C"
+    },
+    // Media interpreter — images, screenshots, documents.
+    "multimodal-looker": {
+      "model": "anthropic/claude-sonnet-5",
+      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "color": "#E91E63"
     }
   },
+
+  // ── Runtime model fallback ──────────────────────────────────────────────
+  // On a retryable session.error (rate limit, quota, 5xx, overloaded) the
+  // plugin resubmits the same session on the next chain model.
+  //
+  // Semantics: chain advances attempt-by-attempt (rotation via attempt count);
+  // non-terminal errors get ONE same-model retry first; terminal quota errors
+  // rotate immediately. Attempt counter is per-session and cumulative until
+  // plugin restart — `max_attempts` is the hard cap across the whole session.
+  // Cooldown doubles per consecutive failure (60 → 120 → 240 … cap 32x).
+  //
+  // max_attempts must be >= fallback chain length, otherwise the tail of a
+  // long chain never gets tried.
   "fallback": {
     "enabled": true,
+    // HTTP codes treated as retryable (plus quota/billing wording is matched
+    // by classify.ts regardless of this list).
     "retry_on_errors": [429, 500, 502, 503, 504],
-    "max_attempts": 3,
+    // Hard cap on fallback attempts per session (>= chain length to allow a
+    // full walk: chain below has 1 entry, 5 leaves headroom to extend it).
+    "max_attempts": 5,
     "cooldown_seconds": 60,
     // Global fallback chain: used by every agent (including delegated
-    // subagents) that has no per-agent fallback_models entry.
+    // subagents) that has no per-agent fallback_models entry. Per-agent lists
+    // (top-level `agents` above) are the ONLY way to configure a specific
+    // agent's chain and fully replace this global chain for that agent.
     "models": ["openrouter/~deepseek/deepseek-flash-latest"]
   },
 
-  // Per-family sampling. Defaults already cover kimi/glm/openrouter-generic
-  // (0.3 / 0.9); add entries here to override or to tune other families.
-  "sampling": {},
+  // ── Per-family sampling ─────────────────────────────────────────────────
+  // All 7 families from src/models/resolveFamily.ts made explicit:
+  //   kimi / glm / openrouter-generic / fallback → cheap 0.3/0.9 (matches
+  //     DEFAULT_SAMPLING + guards family)
+  //   claude / gpt / gemini → 0.4/0.8 (README example values)
+  // Missing families would fall back to provider defaults; listed here so
+  // every family is intentionally pinned.
+  "sampling": {
+    "claude": { "temperature": 0.4, "topP": 0.8 },
+    "gpt": { "temperature": 0.4, "topP": 0.8 },
+    "gemini": { "temperature": 0.4, "topP": 0.8 },
+    "kimi": { "temperature": 0.3, "topP": 0.9 },
+    "glm": { "temperature": 0.3, "topP": 0.9 },
+    "openrouter-generic": { "temperature": 0.3, "topP": 0.9 },
+    "fallback": { "temperature": 0.3, "topP": 0.9 }
+  },
 
+  // ── Skills ──────────────────────────────────────────────────────────────
   // Extra skill directories to bridge into opencode's native skills dir
   // (~/.config/opencode/skills). oh-my kept its own cache at
   // ~/.cache/opencode/skills — list it here to make those skills usable again.
@@ -47,11 +138,16 @@
     "extraDirs": ["/home/astroreen/.cache/opencode/skills"]
   },
 
+  // ── Idle continuation ───────────────────────────────────────────────────
   // Opt-in: when a session goes idle with unfinished todos, continue it
-  // automatically (capped per session). Off by default to avoid loops.
+  // automatically (capped per session). Off by default to avoid loops —
+  // flip `enabled` to true to arm it; `max` caps sends per session, cooldown
+  // and failure caps are hardcoded (src/idle/constants.ts).
   "idleContinuation": { "enabled": false, "max": 3 },
 
+  // ── Reasoning injection ─────────────────────────────────────────────────
   // Inject family reasoning options: claude extended thinking (32000 budget),
-  // gpt reasoningEffort "medium". Set false to disable.
+  // gpt reasoningEffort "medium" (or :level suffix ladder). Set false to
+  // disable entirely.
   "reasoning": { "enabled": true }
 }

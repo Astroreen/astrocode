@@ -48,14 +48,13 @@ describe("parseFallbackConfig", () => {
       max_attempts: 5,
       cooldown_seconds: 10,
       models: ["a/b"],
-      agents: { oracle: { models: ["x/y"] } },
     });
     expect(parsed.enabled).toBe(true);
     expect(parsed.retry_on_errors).toEqual([429]);
     expect(parsed.max_attempts).toBe(5);
     expect(parsed.cooldown_seconds).toBe(10);
     expect(parsed.models).toEqual(["a/b"]);
-    expect(parsed.agents.oracle.models).toEqual(["x/y"]);
+    expect(parsed.agents).toEqual({});
   });
 
   test("garbage fields fall back to defaults", () => {
@@ -168,7 +167,9 @@ describe("model helpers", () => {
   });
 
   test("resolveFallbackModels: per-agent replaces global", () => {
-    const config = configWith({ agents: { oracle: { models: ["x/y"] } } });
+    const config = configWith();
+    // runtime carrier (normally bridged from top-level agents[].fallback_models)
+    config.agents = { oracle: { models: ["x/y"] } };
     expect(resolveFallbackModels(config, "oracle")).toEqual(["x/y"]);
     expect(resolveFallbackModels(config, "explore")).toEqual(["openai/gpt-4o"]);
     expect(resolveFallbackModels(config)).toEqual(["openai/gpt-4o"]);

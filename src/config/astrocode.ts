@@ -256,9 +256,6 @@ function mergeAgentMaps(
 }
 
 // Merge config layers ordered farthest-first; later (nearer) layers win.
-// Top-level keys are shallow-merged; `agents`/`fallback.agents` are merged
-// per agent; `fallback`/`sampling` are shallow-merged. Arrays are replaced by
-// the nearest layer that defines them. Malformed shapes are treated as absent.
 function mergeConfigLayers(
   layers: Record<string, unknown>[],
 ): Record<string, unknown> {
@@ -270,17 +267,7 @@ function mergeConfigLayers(
         out.agents = mergeAgentMaps(out.agents, value);
       } else if (key === "fallback") {
         const far = isPlainObject(out.fallback) ? out.fallback : {};
-        const merged: Record<string, unknown> = { ...far };
-        if (isPlainObject(value)) {
-          for (const [fk, fv] of Object.entries(value)) {
-            if (fk === "agents") {
-              merged.agents = mergeAgentMaps(merged.agents, fv);
-            } else {
-              merged[fk] = fv;
-            }
-          }
-        }
-        out.fallback = merged;
+        out.fallback = isPlainObject(value) ? { ...far, ...value } : far;
       } else if (key === "sampling") {
         const far = isPlainObject(out.sampling) ? out.sampling : {};
         out.sampling = isPlainObject(value) ? { ...far, ...value } : far;
@@ -371,8 +358,18 @@ export function loadAstrocodeConfig(
         ? fileReasoning.enabled
         : true;
 
+  const fallback = parseFallbackConfig(mergedFallback);
+  // Bridge top-level `agents.<name>.fallback_models` into the fallback engine.
+  // This is the SINGLE source of truth for per-agent chains; a raw
+  // `fallback.agents` input is ignored by parseFallbackConfig.
+  for (const [name, settings] of Object.entries(agents)) {
+    if (settings.fallbackModels) {
+      fallback.agents[name] = { models: settings.fallbackModels };
+    }
+  }
+
   return {
-    fallback: parseFallbackConfig(mergedFallback),
+    fallback,
     agents,
     model: asString(inline.model) ?? asString(fileRaw.model),
     sampling,

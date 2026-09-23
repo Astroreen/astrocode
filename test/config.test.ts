@@ -25,18 +25,19 @@ describe("sanitizeJsonc", () => {
 });
 
 describe("parseFallbackConfig", () => {
-  test("accepts per-agent fallback_models (and legacy models)", () => {
+  test("parses global settings; ignores fallback.agents input", () => {
     const config = parseFallbackConfig({
       enabled: true,
       models: ["global/one"],
       agents: {
-        sisyphus: { fallback_models: ["anthropic/claude-sonnet-4-6"] },
-        legacy: { models: ["x/y"] },
+        sisyphus: { fallback_models: ["ignored/chain"] },
       },
     });
-    expect(config.agents.sisyphus.models).toEqual(["anthropic/claude-sonnet-4-6"]);
-    expect(config.agents.legacy.models).toEqual(["x/y"]);
+    expect(config.enabled).toBe(true);
     expect(config.models).toEqual(["global/one"]);
+    // single source of truth: top-level agents[].fallback_models, bridged by
+    // loadAstrocodeConfig — a raw fallback.agents input is NOT parsed
+    expect(config.agents).toEqual({});
   });
 });
 
@@ -59,6 +60,8 @@ describe("loadAstrocodeConfig", () => {
     expect(fromFile.agents.oracle?.color).toBe("#E74C3C");
     expect(fromFile.fallback.enabled).toBe(true);
     expect(fromFile.fallback.models).toEqual(["file/chain"]);
+    // top-level agents[].fallback_models bridges into the fallback engine
+    expect(fromFile.fallback.agents.oracle?.models).toEqual(["a/b"]);
 
     const withInline = loadAstrocodeConfig([dir], {
       fallback: { enabled: false, models: ["inline/chain"] },
@@ -96,6 +99,28 @@ describe("loadAstrocodeConfig", () => {
     expect(defaults.skills.extraDirs).toEqual([]);
     expect(defaults.idleContinuation.enabled).toBe(false);
     expect(defaults.reasoning.enabled).toBe(true);
+  });
+
+  test("fallback.agents input is ignored; top-level agents is the only source", () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-bridge-"));
+    try {
+      mkdirSync(join(dir, ".opencode"), { recursive: true });
+      writeFileSync(
+        join(dir, ".opencode", "astrocode.jsonc"),
+        JSON.stringify({
+          agents: { oracle: { fallback_models: ["top/chain"] } },
+          fallback: {
+            agents: { oracle: { fallback_models: ["ignored/chain"] } },
+          },
+        }),
+      );
+
+      const config = loadAstrocodeConfig([dir]);
+      expect(config.fallback.agents.oracle?.models).toEqual(["top/chain"]);
+      expect(config.agents.oracle?.fallbackModels).toEqual(["top/chain"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("missing file yields defaults plus inline options", () => {

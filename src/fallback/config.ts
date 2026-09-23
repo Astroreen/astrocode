@@ -7,8 +7,12 @@
 // Shape:
 //   { fallback: {
 //       enabled, retry_on_errors: number[], max_attempts, cooldown_seconds,
-//       models: string[] (global chain),
-//       agents: { <name>: { models: string[] } } (full replace, no merge) } }
+//       models: string[] (global chain) } }
+//
+// Per-agent chains are NOT configured here: the ONLY source is top-level
+// `agents.<name>.fallback_models` in astrocode.jsonc. `loadAstrocodeConfig`
+// bridges those into `FallbackConfig.agents` (a runtime carrier). A raw
+// `fallback.agents` input is ignored.
 
 export interface FallbackAgentOverride {
   models: string[];
@@ -20,6 +24,8 @@ export interface FallbackConfig {
   max_attempts: number;
   cooldown_seconds: number;
   models: string[];
+  /** Runtime carrier — populated by loadAstrocodeConfig from top-level
+   * `agents[].fallback_models`; never parsed from `fallback.agents`. */
   agents: Record<string, FallbackAgentOverride>;
 }
 
@@ -61,19 +67,6 @@ function asNonNegativeInt(value: unknown): number | undefined {
   return Math.floor(value);
 }
 
-function parseAgents(raw: unknown): Record<string, FallbackAgentOverride> {
-  const agents: Record<string, FallbackAgentOverride> = {};
-  if (!raw || typeof raw !== "object") return agents;
-  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!value || typeof value !== "object") continue;
-    const entry = value as Record<string, unknown>;
-    agents[name] = {
-      models: asStringArray(entry.fallback_models ?? entry.models),
-    };
-  }
-  return agents;
-}
-
 export function parseFallbackConfig(raw: unknown): FallbackConfig {
   if (!raw || typeof raw !== "object") {
     return { ...DEFAULT_FALLBACK_CONFIG, agents: {} };
@@ -93,6 +86,8 @@ export function parseFallbackConfig(raw: unknown): FallbackConfig {
       asNonNegativeInt(input.cooldown_seconds) ??
       DEFAULT_FALLBACK_CONFIG.cooldown_seconds,
     models: asStringArray(input.models),
-    agents: parseAgents(input.agents),
+    // `fallback.agents` input intentionally ignored — single source of truth
+    // is top-level `agents[].fallback_models` (bridged by loadAstrocodeConfig).
+    agents: {},
   };
 }

@@ -133,13 +133,14 @@ astrocode-specific in `opencode.jsonc`:
 ```
 
 A per-agent `fallback_models` list fully replaces the global chain for that agent (no merge).
-Inline plugin options (the second tuple element in `opencode.jsonc`) are still honored and
-override the file.
+Top-level `agents.<name>.fallback_models` is the **only** place to configure per-agent chains —
+a `fallback.agents` block is ignored. Inline plugin options (the second tuple element in
+`opencode.jsonc`) are still honored and override the file.
 
 **Walk-up multi-layer merge** (`src/config/astrocode.ts`): `collectConfigLayers` walks up from
 the project dir to home (farthest-first) and collects every `astrocode.jsonc`/`astrocode.json`
 found at each level; `mergeConfigLayers` merges them with **nearest wins**. Top-level keys and
-`fallback`/`sampling` are shallow-merged, `agents` (and `fallback.agents`) are merged per agent,
+`fallback`/`sampling` are shallow-merged, `agents` is merged per agent,
 and arrays (e.g. `fallback_models`) are **full-replaced** by the nearest layer that defines them —
 never concatenated. `loadAstrocodeConfig` merges all layers, then applies inline overrides on top.
 
