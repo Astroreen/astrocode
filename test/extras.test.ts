@@ -15,7 +15,10 @@ import {
   linkExtraSkillDirs,
   discoverSkills,
   discoverSkillsWithPriority,
+  skillCommandTemplate,
   standardSkillSources,
+  stripFrontmatter,
+  thinSkillCommandTemplate,
 } from "../src/skills/extra";
 import {
   maybeContinueIdle,
@@ -206,6 +209,69 @@ describe("discoverSkills", () => {
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("skillCommandTemplate (oh-my parity)", () => {
+  test("stripFrontmatter removes the YAML block, keeps the body", () => {
+    const raw = "---\nname: x\ndescription: y\n---\nWrite commits terse.\n";
+    expect(stripFrontmatter(raw)).toBe("Write commits terse.\n");
+  });
+
+  test("stripFrontmatter is a no-op without frontmatter", () => {
+    expect(stripFrontmatter("# plain\n")).toBe("# plain\n");
+  });
+
+  test("wraps body in skill-instruction and puts $ARGUMENTS in user-request", () => {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-tmpl-"));
+    try {
+      const dir = join(root, "caveman-commit");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "SKILL.md"),
+        "---\nname: caveman-commit\ndescription: commit gen\n---\nWrite commits terse.\n",
+      );
+      const skills = discoverSkills([root]);
+      expect(skills.length).toBe(1);
+
+      const template = skillCommandTemplate(skills[0]!);
+      expect(template).toContain("<skill-instruction>");
+      expect(template).toContain("Write commits terse.");
+      expect(template).not.toContain("name: caveman-commit");
+      expect(template).toContain("<user-request>\n$ARGUMENTS\n</user-request>");
+      // Body first, user request last (oh-my order).
+      expect(template.indexOf("</skill-instruction>")).toBeLessThan(
+        template.indexOf("<user-request>"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("missing SKILL.md falls back to the thin skill-tool template", () => {
+    const skill = {
+      name: "ghost",
+      description: "",
+      location: "/definitely/not/here/SKILL.md",
+    };
+    const template = skillCommandTemplate(skill);
+    expect(template).toBe(thinSkillCommandTemplate("ghost"));
+    expect(template).toContain('calling the skill tool');
+    expect(template).toContain("$ARGUMENTS");
+  });
+
+  test("empty body falls back to the thin template", () => {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-empty-"));
+    try {
+      const dir = join(root, "empty");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "SKILL.md"), "---\nname: empty\n---\n   \n");
+      const skills = discoverSkills([root]);
+      expect(skills.length).toBe(1);
+      expect(skillCommandTemplate(skills[0]!)).toBe(thinSkillCommandTemplate("empty"));
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -52,6 +52,7 @@ import {
   EXTRA_SKILL_PRIORITY,
   linkExtraSkillDirs,
   discoverSkillsWithPriority,
+  skillCommandTemplate,
   standardSkillSources,
 } from "./skills/extra";
 import {
@@ -235,8 +236,10 @@ const astrocodePlugin: Plugin = async (input, options) => {
 
         // Surface discovered skills as slash commands. opencode registers skills
         // for the model's `skill` tool but NOT as commands, so `/caveman` etc.
-        // otherwise appear "missing" in the UI. Each command just instructs the
-        // model to load the skill via its own tool. Never clobbers an existing
+        // otherwise appear "missing" in the UI. Each command embeds the full
+        // SKILL.md body (oh-my parity): `<skill-instruction>` + trailing user
+        // args in `<user-request>$ARGUMENTS</user-request>` — one user message,
+        // skill prompt first, user request last. Never clobbers an existing
         // command (user or builtin).
         const sources = standardSkillSources(searchDirs, BUNDLED_SKILLS_DIR);
         for (const dir of astrocodeConfig.skills.extraDirs) {
@@ -252,9 +255,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
               summary ? `Skill: ${summary}` : `Skill: ${skill.name}`,
               160,
             ),
-            template:
-              `Load the "${skill.name}" skill by calling the skill tool ` +
-              `(name: "${skill.name}"), then follow its instructions.\n\n$ARGUMENTS`,
+            template: skillCommandTemplate(skill),
           };
           skillCommands++;
         }

@@ -88,9 +88,11 @@ export function linkExtraSkillDirs(
 //
 // opencode registers skills for the MODEL (the `skill` tool lists them), but a
 // skill is not a slash command — so users who expect `/caveman` etc. "cannot
-// see" their skills. This scans the standard skill dirs and returns the skill
-// names/descriptions, which the plugin turns into thin commands that tell the
-// model to load the skill via its own `skill` tool.
+// see" their skills. This scans the standard skill dirs; the plugin turns each
+// skill into a slash command whose template embeds the full SKILL.md body
+// (oh-my-openagent parity): `<skill-instruction>` wraps the body, the user's
+// trailing args land in `<user-request>$ARGUMENTS</user-request>`, and the
+// whole thing becomes one user message.
 
 export interface DiscoveredSkill {
   name: string;
@@ -283,4 +285,47 @@ export function standardSkillSources(
 
 export function standardSkillDirs(projectDirs: string[]): string[] {
   return standardSkillSources(projectDirs).map((source) => source.dir);
+}
+
+// ---------------------------------------------------------------------------
+// Skill → slash-command template (oh-my-openagent parity).
+//
+// oh-my wraps the skill body in `<skill-instruction>` and puts the trailing
+// `/cmd args` text in `<user-request>`, so the model sees one user message:
+// skill prompt first, the user's actual request last. opencode substitutes
+// `$ARGUMENTS` in command templates before creating the user message.
+
+/** Drop YAML frontmatter (`--- ... ---`) from a SKILL.md body. */
+export function stripFrontmatter(raw: string): string {
+  if (!raw.startsWith("---")) return raw;
+  const match = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/.exec(raw);
+  if (!match) return raw;
+  return raw.slice(match[0].length);
+}
+
+/** Fallback when the SKILL.md body cannot be read: point at the skill tool. */
+export function thinSkillCommandTemplate(name: string): string {
+  return (
+    `Load the "${name}" skill by calling the skill tool ` +
+    `(name: "${name}"), then follow its instructions.\n\n$ARGUMENTS`
+  );
+}
+
+/**
+ * Full-body command template: skill prompt + user's trailing args in
+ * `<user-request>`. Falls back to the thin skill-tool instruction when the
+ * file is missing/empty (best-effort, never throws).
+ */
+export function skillCommandTemplate(skill: DiscoveredSkill): string {
+  let body = "";
+  try {
+    body = stripFrontmatter(readFileSync(skill.location, "utf8")).trim();
+  } catch {
+    body = "";
+  }
+  if (!body) return thinSkillCommandTemplate(skill.name);
+  return (
+    `<skill-instruction>\n${body}\n</skill-instruction>\n\n` +
+    `<user-request>\n$ARGUMENTS\n</user-request>`
+  );
 }

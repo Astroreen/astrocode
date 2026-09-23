@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import astrocodePlugin from "../src/index";
@@ -337,6 +337,56 @@ describe("astrocode plugin — chat.message fallback pin", () => {
     await hooks["chat.message"]!({ sessionID: "cm-nomodel" } as any, output);
 
     expect(output.message.model).toEqual(parsedFallback);
+  });
+});
+
+describe("astrocode plugin — skill slash commands (oh-my parity)", () => {
+  test("config injects skill command with full body + <user-request>", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-skillcmd-"));
+    try {
+      const skillDir = join(dir, ".opencode", "skills", "demo-skill");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        "---\nname: demo-skill\ndescription: demo\ndemo body line\n---\nDo the demo thing.\n",
+      );
+
+      const hooks = await astrocodePlugin({ directory: dir } as any);
+      const cfg = { command: {} } as any;
+      await hooks.config!(cfg);
+
+      const def = cfg.command["demo-skill"];
+      expect(def).toBeDefined();
+      expect(def.template).toContain("<skill-instruction>");
+      expect(def.template).toContain("Do the demo thing.");
+      expect(def.template).toContain("<user-request>\n$ARGUMENTS\n</user-request>");
+      expect(def.template.indexOf("</skill-instruction>")).toBeLessThan(
+        def.template.indexOf("<user-request>"),
+      );
+      expect(def.description).toContain("Skill:");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("existing command with the same name is not clobbered", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-skillcmd2-"));
+    try {
+      const skillDir = join(dir, ".opencode", "skills", "refactor");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        "---\nname: refactor\ndescription: skill version\n---\nskill body\n",
+      );
+
+      const hooks = await astrocodePlugin({ directory: dir } as any);
+      const cfg = { command: { refactor: { template: "USER COMMAND" } } } as any;
+      await hooks.config!(cfg);
+
+      expect(cfg.command.refactor.template).toBe("USER COMMAND");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
