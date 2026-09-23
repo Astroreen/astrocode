@@ -369,7 +369,7 @@ describe("astrocode plugin — skill slash commands (oh-my parity)", () => {
     }
   });
 
-  test("existing command with the same name is not clobbered", async () => {
+  test("existing user command with the same name is not clobbered", async () => {
     const dir = mkdtempSync(join(tmpdir(), "astrocode-skillcmd2-"));
     try {
       const skillDir = join(dir, ".opencode", "skills", "refactor");
@@ -384,6 +384,61 @@ describe("astrocode plugin — skill slash commands (oh-my parity)", () => {
       await hooks.config!(cfg);
 
       expect(cfg.command.refactor.template).toBe("USER COMMAND");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("self-heals a prior thin skill stub from a duplicate plugin load", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-skillcmd3-"));
+    try {
+      const skillDir = join(dir, ".opencode", "skills", "demo-skill");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        "---\nname: demo-skill\ndescription: demo\n---\nDo the demo thing.\n",
+      );
+
+      // Simulates the stale HM-deployed copy claiming the name first with the
+      // old thin template (double-load race).
+      const thin =
+        `Load the "demo-skill" skill by calling the skill tool ` +
+        `(name: "demo-skill"), then follow its instructions.\n\n$ARGUMENTS`;
+      const hooks = await astrocodePlugin({ directory: dir } as any);
+      const cfg = {
+        command: {
+          "demo-skill": { description: "Skill: demo", template: thin },
+        },
+      } as any;
+      await hooks.config!(cfg);
+
+      expect(cfg.command["demo-skill"].template).toContain("<skill-instruction>");
+      expect(cfg.command["demo-skill"].template).toContain("Do the demo thing.");
+      expect(cfg.command["demo-skill"].template).not.toBe(thin);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("user command without Skill: description and non-skill template stays", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-skillcmd4-"));
+    try {
+      const skillDir = join(dir, ".opencode", "skills", "commit");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        "---\nname: commit\ndescription: skill commit\n---\nbody\n",
+      );
+
+      const hooks = await astrocodePlugin({ directory: dir } as any);
+      const cfg = {
+        command: {
+          commit: { description: "my custom commit helper", template: "CUSTOM" },
+        },
+      } as any;
+      await hooks.config!(cfg);
+
+      expect(cfg.command.commit.template).toBe("CUSTOM");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -53,6 +53,7 @@ import {
   linkExtraSkillDirs,
   discoverSkillsWithPriority,
   skillCommandTemplate,
+  thinSkillCommandTemplate,
   standardSkillSources,
 } from "./skills/extra";
 import {
@@ -121,6 +122,25 @@ function familyForModel(model: string | undefined): ModelFamily | undefined {
 function truncate(value: string, max: number): string {
   if (value.length <= max) return value;
   return `${value.slice(0, max - 1).trimEnd()}…`;
+}
+
+// Is this command definition one that a prior astrocode load registered for
+// this skill (thin stub or full-body wrap)? Used to self-heal when the same
+// plugin loads twice (project path + HM-deployed plugins/ auto-discovery) so
+// an older copy's thin stub cannot pin the name. User/builtin commands return
+// false and are never overwritten.
+function isOwnSkillCommand(
+  definition: unknown,
+  skillName: string,
+): boolean {
+  if (!definition || typeof definition !== "object") return false;
+  const def = definition as { template?: unknown; description?: unknown };
+  const template = typeof def.template === "string" ? def.template : "";
+  const description = typeof def.description === "string" ? def.description : "";
+  if (template === thinSkillCommandTemplate(skillName)) return true;
+  if (description.startsWith("Skill:")) return true;
+  if (template.startsWith("<skill-instruction>")) return true;
+  return false;
 }
 
 const astrocodePlugin: Plugin = async (input, options) => {
@@ -239,8 +259,14 @@ const astrocodePlugin: Plugin = async (input, options) => {
         // otherwise appear "missing" in the UI. Each command embeds the full
         // SKILL.md body (oh-my parity): `<skill-instruction>` + trailing user
         // args in `<user-request>$ARGUMENTS</user-request>` — one user message,
-        // skill prompt first, user request last. Never clobbers an existing
-        // command (user or builtin).
+        // skill prompt first, user request last.
+        //
+        // The same plugin can load twice in one bootstrap (project path in
+        // .opencode/opencode.jsonc + HM-deployed ~/.config/opencode/plugins/
+        // auto-discovery). Whichever loads first claims skill names; a naive
+        // `continue` would let an older copy's thin stub win. Self-heal: a
+        // definition that is recognizably OUR skill entry (thin stub or prior
+        // full-body wrap) is replaced; user/builtin commands are never touched.
         const sources = standardSkillSources(searchDirs, BUNDLED_SKILLS_DIR);
         for (const dir of astrocodeConfig.skills.extraDirs) {
           sources.push({ dir, priority: EXTRA_SKILL_PRIORITY, label: "extra" });
@@ -248,7 +274,8 @@ const astrocodePlugin: Plugin = async (input, options) => {
         const skills = discoverSkillsWithPriority(sources);
         let skillCommands = 0;
         for (const skill of skills) {
-          if (commands[skill.name]) continue;
+          const existing = commands[skill.name];
+          if (existing && !isOwnSkillCommand(existing, skill.name)) continue;
           const summary = skill.description.replace(/\s+/g, " ").trim();
           commands[skill.name] = {
             description: truncate(
