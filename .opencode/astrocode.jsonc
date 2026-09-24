@@ -5,6 +5,64 @@
   //
   // Agent keys may be either opencode display names (what you see in the TAB
   // switcher, e.g. "Sisyphus - ultraworker") or canonical keys ("sisyphus").
+  //
+  // ── Model policy (2026-09) ──────────────────────────────────────────────
+  // BASE models: anthropic only, served through the local meridian proxy.
+  //
+  // WARNING about discovery: the proxy's GET /v1/models list is INCOMPLETE and
+  // POST /v1/messages does NOT validate model ids — a bogus id like
+  // "claude-bogus-9-9" still answers 200. So the endpoint cannot be used to
+  // probe availability. Ids below are the ones confirmed in actual use.
+  //   anthropic/claude-opus-5-5              — current frontier, top reasoning
+  //   anthropic/claude-sonnet-5              — balanced workhorse
+  //   anthropic/claude-haiku-4-5-20251001    — cheap/fast, mechanical work
+  //
+  // Anthropic degradation step: opus burns its Pro cap well before sonnet does,
+  // so opus-tier agents fall to sonnet-5 → haiku FIRST, and only then leave the
+  // subscription for paid openrouter. Delete those two lines if you'd rather
+  // jump straight to openrouter.
+  //
+  // ── How the openrouter chains were chosen ───────────────────────────────
+  // EVERY openrouter entry is annotated `AA=<n> in/out ctx`, where AA is the
+  // Artificial Analysis Intelligence Index v4.3.2 (composite of Terminal-Bench
+  // 4.0, SciCode, HLE, GDPval-AA, AA-Briefcase, AutomationBench, AA-LCR,
+  // AA-Omniscience, GDP.pdf, CritPt). Verified per-model on
+  // artificialanalysis.ai/models/<slug> on 2026-09-24. Median across all
+  // measured models is ~13, so AA<15 means "actively dumb", AA>35 is frontier.
+  // Prices are OPENROUTER's, which often differ from the vendor first-party
+  // prices AA quotes — openrouter is what actually gets billed.
+  //
+  // Budget ceiling: ~0.50 in / ~1.05 out USD per M tokens (deepseek-flash
+  // reference 0.099/0.60 + ~0.40 tolerance). Everything live below fits.
+  //
+  // TRAPS — cheap, plausible-sounding, and measurably bad. Do NOT re-add:
+  //   qwen/qwen3-coder-next            AA=9   "coder" in the name, near-worst
+  //   qwen/qwen3-coder-30b-a3b         AA=10
+  //   arcee-ai/trinity-large-thinking  AA=11  "thinking" in the name, weak
+  //   z-ai/glm-4.6v                    AA=8   was our top VLM pick — it is not
+  //   meta-llama/llama-4-scout         AA=8   big ctx, empty head
+  //   qwen/qwen3-vl-30b / -32b / -8b   AA=8/8/7
+  //   openai/gpt-oss-120b              AA=12  + 21% malformed edits on Aider
+  //
+  // Resolved surprises worth remembering:
+  //   openai/gpt-6-luna    AA=37 at 0.10/0.50 — one of the best value models in
+  //     existence, NOT weak. Suspicion that it trails deepseek-flash: refuted.
+  //   xiaomi/mimo-v2.6-pro AA=46 at 0.43/0.87 — #1 open-weight model on AA and
+  //     still inside budget. Ties grok-4.7 (AA=46) at ~1/5 the price.
+  //   z-ai/glm-5.3-flash   AA=42 at 0.15/0.50 — best raw value in the list.
+  //   deepseek pro family: you granted an exception for it, but it is NOT worth
+  //     using. deepseek-v4-pro scores AA=36 at 0.94/1.89 — LOWER than
+  //     glm-5.3-flash (AA=42) at ~6x the price. Exception deliberately unused;
+  //     the pro entries are parked in the commented blocks instead.
+  //
+  // Family gotcha (src/models/resolveFamily.ts matches substrings):
+  //   deepseek|qwen|minimax|yi|zhipu -> openrouter-generic, glm -> glm,
+  //   gpt -> gpt, everything else -> fallback. generic+fallback use 0.3/0.9.
+  //   gpt-6-luna therefore gets reasoningEffort injected — that is CORRECT
+  //   here, it is a reasoning model with a low/medium/high/xhigh effort ladder.
+  //
+  // Dedup gotcha (src/fallback/canonicalize.ts): entries equivalent to the
+  // current model are skipped, so never list two spellings of one model.
 
   // Global default model for agents that do not set their own `model`
   // (also drives family reasoning options like claude extended thinking).
@@ -16,70 +74,238 @@
   // (no merge). Color overrides the oh-my palette default (DEFAULT_COLORS in
   // src/agents/personas.ts).
   "agents": {
-    // Primary orchestrator.
+    // Primary orchestrator — long context, heavy delegation + verification
+    // discipline. Best model available, then strictly AA-descending.
     "Sisyphus - ultraworker": {
-      "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "model": "anthropic/claude-opus-5-5",
+      "fallback_models": [
+        "anthropic/claude-sonnet-5", //                    still on the Pro plan
+        "anthropic/claude-haiku-4-5-20251001", //          last free tier
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M  best in budget, slow (51 t/s)
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M  best value overall
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M  cheapest frontier-ish
+        "openrouter/deepseek/deepseek-v4-flash", //        AA=34  0.06/0.13  1.0M  absurd value floor
+        "openrouter/upstage/solar-pro4", //                AA=28  0.09/0.36  524k
+        "openrouter/inclusionai/ling-3.0-flash" //         AA=25  0.02/0.06  262k  last resort, near-free
+        // ── premium: best orchestration money can buy ─────────────────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k  ties mimo at 4x price
+        // "openrouter/z-ai/glm-5.3-prime",             // AA=45  2.80/8.80  1.0M
+        // "openrouter/moonshotai/kimi-k3",             // AA=44  3.00/15.00 1.0M
+        // "openrouter/anthropic/claude-opus-5.5",      //        4.00/20.00 1.0M  same brain as the base
+        // "openrouter/openai/gpt-5.5",                 //        5.00/30.00 1.0M
+        // "openrouter/deepseek/deepseek-v4-pro",       // AA=36  0.94/1.89  1.0M  worse than glm-5.3-flash
+      ],
       "color": "#00CED1"
     },
-    // Cheap focused executor for 1-2 file edits.
+    // Cheap focused executor for 1-2 file edits. NOTE: every model with
+    // "coder" in its name benchmarked WORSE than these generalists.
     "Sisyphus-Junior": {
       "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "fallback_models": [
+        "anthropic/claude-haiku-4-5-20251001", //          still on the Pro plan
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/deepseek/deepseek-v4-flash", //        AA=34  0.06/0.13  1.0M
+        "openrouter/upstage/solar-pro4", //                AA=28  0.09/0.36  524k
+        "openrouter/tencent/hy3" //                        AA=25  0.08/0.33  262k
+        // ── premium: best code editors ───────────────────────────────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k
+        // "openrouter/anthropic/claude-sonnet-5",      //        2.00/10.00 1.0M
+        // "openrouter/openai/gpt-5.3-codex",           //        1.75/14.00 400k
+        // "openrouter/moonshotai/kimi-k2.7-code",      // AA=26  0.71/3.30  262k  AA lower than it sounds
+      ],
       "color": "#16A085"
     },
-    // Autonomous deep worker — expensive; same chain as the rest.
+    // Autonomous deep worker — long-horizon "100% or nothing" execution loop.
+    // Needs the strongest model; degrades strictly by measured intelligence.
     "Hephaestus - Deep Agent": {
-      "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "model": "anthropic/claude-opus-5-5",
+      "fallback_models": [
+        "anthropic/claude-sonnet-5", //                    still on the Pro plan
+        "anthropic/claude-haiku-4-5-20251001", //          last free tier
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/deepseek/deepseek-v4-flash", //        AA=34  0.06/0.13  1.0M
+        "openrouter/upstage/solar-pro4", //                AA=28  0.09/0.36  524k
+        "openrouter/deepseek/deepseek-v3.2" //             AA=21  0.26/0.40  163k  (reasoning variant)
+        // ── premium: best long-horizon autonomous workers ────────────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k
+        // "openrouter/z-ai/glm-5.3-prime",             // AA=45  2.80/8.80  1.0M
+        // "openrouter/moonshotai/kimi-k3",             // AA=44  3.00/15.00 1.0M
+        // "openrouter/anthropic/claude-opus-5.5",      //        4.00/20.00 1.0M
+        // "openrouter/openai/gpt-5.3-codex",           //        1.75/14.00 400k
+      ],
       "color": "#FF6B35"
     },
-    // Plan executor (target of /start-work).
+    // Plan executor (target of /start-work). Conductor, never writes code —
+    // orchestration + verification, so agentic/tool-use scores dominate.
     "Atlas - Plan Executor": {
       "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "fallback_models": [
+        "anthropic/claude-haiku-4-5-20251001", //          still on the Pro plan
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/deepseek/deepseek-v4-flash" //         AA=34  0.06/0.13  1.0M
+        // ── premium: best orchestration / tool-use ───────────────────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k
+        // "openrouter/anthropic/claude-sonnet-5",      //        2.00/10.00 1.0M
+        // "openrouter/anthropic/claude-opus-5.5",      //        4.00/20.00 1.0M
+      ],
       "color": "#3498DB"
     },
-    // Planning consultant — writes decision-complete work plans.
+    // Planning consultant — writes decision-complete work plans, has web
+    // search. Reasoning-first, and note: every model marketed as a "thinking"
+    // model in this price band scored badly (trinity-large-thinking AA=11).
     "Prometheus - Plan Builder": {
-      "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "model": "anthropic/claude-opus-5-5",
+      "fallback_models": [
+        "anthropic/claude-sonnet-5", //                    still on the Pro plan
+        "anthropic/claude-haiku-4-5-20251001", //          last free tier
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/deepseek/deepseek-v4-flash", //        AA=34  0.06/0.13  1.0M
+        "openrouter/upstage/solar-pro4" //                 AA=28  0.09/0.36  524k
+        // ── premium: best planning / long-form reasoning ─────────────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k
+        // "openrouter/z-ai/glm-5.3-prime",             // AA=45  2.80/8.80  1.0M
+        // "openrouter/anthropic/claude-opus-5.5",      //        4.00/20.00 1.0M
+        // "openrouter/google/gemini-3.1-pro-preview",  //        2.00/12.00 1.0M
+      ],
       "color": "#9B59B6"
     },
-    // Pre-planning risk analysis.
+    // Pre-planning risk analysis — read-only, low output volume, high
+    // reasoning density. Sonnet is enough; chain is pure AA-descending.
     "Metis - Plan Consultant": {
       "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "fallback_models": [
+        "anthropic/claude-haiku-4-5-20251001", //          still on the Pro plan
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/deepseek/deepseek-v4-flash" //         AA=34  0.06/0.13  1.0M
+        // ── premium: best analytical reasoners ───────────────────────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k
+        // "openrouter/z-ai/glm-5.3-prime",             // AA=45  2.80/8.80  1.0M
+        // "openrouter/anthropic/claude-opus-5.5",      //        4.00/20.00 1.0M
+      ],
       "color": "#F1C40F"
     },
-    // Plan critic — verifies executability of written plans.
+    // Plan critic — mechanical verification (files exist, line numbers valid),
+    // approval-biased, tiny output. Optimise hard for cost, but stay above the
+    // AA~13 median so it can still actually read a plan.
     "Momus - Plan Critic": {
-      "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "model": "anthropic/claude-haiku-4-5-20251001",
+      "fallback_models": [
+        "openrouter/deepseek/deepseek-v4-flash", //        AA=34  0.06/0.13  1.0M  best cost/intelligence anywhere
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/upstage/solar-pro4", //                AA=28  0.09/0.36  524k
+        "openrouter/inclusionai/ling-3.0-flash", //        AA=25  0.02/0.06  262k
+        "openrouter/tencent/hy3" //                        AA=25  0.08/0.33  262k
+        // ── premium: best cheap verifiers ────────────────────────────────
+        // "openrouter/xiaomi/mimo-v2.6-pro",           // AA=46  0.43/0.87  1.0M  overkill for this role
+        // "openrouter/anthropic/claude-haiku-4.5",     //        1.00/5.00  200k
+      ],
       "color": "#E67E22"
     },
     // Read-only high-IQ consultant for hard debugging / architecture.
+    // Highest reasoning requirement of any agent here.
     "oracle": {
-      "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "model": "anthropic/claude-opus-5-5",
+      "fallback_models": [
+        "anthropic/claude-sonnet-5", //                    still on the Pro plan
+        "anthropic/claude-haiku-4-5-20251001", //          last free tier
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M  highest in budget, period
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/deepseek/deepseek-v4-flash", //        AA=34  0.06/0.13  1.0M
+        "openrouter/upstage/solar-pro4", //                AA=28  0.09/0.36  524k
+        "openrouter/deepseek/deepseek-v3.2" //             AA=21  0.26/0.40  163k  (reasoning variant)
+        // ── premium: the genuinely strongest reasoners available ─────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k
+        // "openrouter/z-ai/glm-5.3-prime",             // AA=45  2.80/8.80  1.0M
+        // "openrouter/moonshotai/kimi-k3",             // AA=44  3.00/15.00 1.0M
+        // "openrouter/anthropic/claude-opus-5.5",      //        4.00/20.00 1.0M
+        // "openrouter/openai/gpt-5.5",                 //        5.00/30.00 1.0M
+        // "openrouter/openai/gpt-5.5-pro",             //       30.00/180.00 1.0M  absurd
+      ],
       "color": "#E74C3C"
     },
-    // Cheap contextual grep for the codebase.
+    // Cheap contextual grep for the codebase — high tool-call volume, rigid
+    // output format, huge file dumps. Wants speed + context, so mimo-v2.6-pro
+    // is deliberately NOT first here (51 t/s, 2.8s TTFT).
     "explore": {
-      "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "model": "anthropic/claude-haiku-4-5-20251001",
+      "fallback_models": [
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M  biggest ctx in budget
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4-flash", //        AA=34  0.06/0.13  1.0M  cheapest good model
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/upstage/solar-pro4", //                AA=28  0.09/0.36  524k
+        "openrouter/inclusionai/ling-3.0-flash" //         AA=25  0.02/0.06  262k
+        // ── premium: best fast long-context searchers ────────────────────
+        // "openrouter/xiaomi/mimo-v2.6-pro",           // AA=46  0.43/0.87  1.0M  smart but slow
+        // "openrouter/x-ai/grok-4.20",                 // AA=26  1.25/2.50  2.0M  biggest ctx anywhere
+      ],
       "color": "#2ECC71"
     },
-    // External docs / OSS / web research.
+    // External docs / OSS / web research — ingests long web pages, so context
+    // size matters, but AA-LCR (long-context reasoning) is part of the index
+    // and the big-context/dumb models (llama-4-scout AA=8) lost on it.
     "librarian": {
       "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "fallback_models": [
+        "anthropic/claude-haiku-4-5-20251001", //          still on the Pro plan
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M  slow, so lower down
+        "openrouter/deepseek/deepseek-v4-flash" //         AA=34  0.06/0.13  1.0M
+        // ── premium: best long-context ingestion / research ──────────────
+        // "openrouter/x-ai/grok-4.20",                 // AA=26  1.25/2.50  2.0M  biggest ctx anywhere
+        // "openrouter/moonshotai/kimi-k3",             // AA=44  3.00/15.00 1.0M
+        // "openrouter/google/gemini-3.1-pro-preview",  //        2.00/12.00 1.0M
+        // "openrouter/perplexity/sonar-pro-search",    //        3.00/15.00 200k  search-native
+      ],
       "color": "#1ABC9C"
     },
     // Media interpreter — images, screenshots, documents.
+    // EVERY entry here MUST be vision-capable; text-only models break it.
+    // Input modality verified per-model on artificialanalysis.ai.
     "multimodal-looker": {
       "model": "anthropic/claude-sonnet-5",
-      "fallback_models": ["openrouter/~deepseek/deepseek-flash-latest"],
+      "fallback_models": [
+        "anthropic/claude-haiku-4-5-20251001", //          still on the Pro plan, vision-capable
+        "openrouter/xiaomi/mimo-v2.6-pro", //              AA=46  0.43/0.87  1.0M  text+image+speech+video
+        "openrouter/z-ai/glm-5.3-flash", //                AA=42  0.15/0.50  1.3M  text+image
+        "openrouter/qwen/qwen3.8-flash", //                AA=40  0.15/0.47  1.0M  text+image+video
+        "openrouter/deepseek/deepseek-v4.1-flash", //      AA=39  0.15/0.60  1.0M  text+image
+        "openrouter/openai/gpt-6-luna", //                 AA=37  0.10/0.50  1.0M  text+image
+        "openrouter/deepseek/deepseek-v4-flash-vision-exp" // AA=35 0.22/0.66 1.0M  vision-tuned
+        // ── premium: best vision models ──────────────────────────────────
+        // "openrouter/x-ai/grok-4.7",                  // AA=46  1.60/4.80  500k
+        // "openrouter/google/gemini-3.1-pro-preview",  //        2.00/12.00 1.0M
+        // "openrouter/anthropic/claude-opus-5.5",      //        4.00/20.00 1.0M
+        // "openrouter/z-ai/glm-5v-turbo",              // AA=23  1.20/4.00  202k  vision-specialist but dimmer
+      ],
       "color": "#E91E63"
     }
   },
@@ -101,15 +327,27 @@
     // HTTP codes treated as retryable (plus quota/billing wording is matched
     // by classify.ts regardless of this list).
     "retry_on_errors": [429, 500, 502, 503, 504],
-    // Hard cap on fallback attempts per session (>= chain length to allow a
-    // full walk: chain below has 1 entry, 5 leaves headroom to extend it).
-    "max_attempts": 5,
+    // Hard cap on fallback attempts per session. Longest per-agent chain is 10
+    // entries — 20 leaves headroom for the same-model retry on non-terminal
+    // errors plus room to extend a chain later.
+    "max_attempts": 20,
     "cooldown_seconds": 60,
     // Global fallback chain: used by every agent (including delegated
     // subagents) that has no per-agent fallback_models entry. Per-agent lists
     // (top-level `agents` above) are the ONLY way to configure a specific
     // agent's chain and fully replace this global chain for that agent.
-    "models": ["openrouter/~deepseek/deepseek-flash-latest"]
+    // Pure AA-descending ladder, all in budget.
+    "models": [
+      "anthropic/claude-sonnet-5", //                      still on the Pro plan
+      "anthropic/claude-haiku-4-5-20251001", //            last free tier
+      "openrouter/xiaomi/mimo-v2.6-pro", //                AA=46  0.43/0.87  1.0M
+      "openrouter/z-ai/glm-5.3-flash", //                  AA=42  0.15/0.50  1.3M
+      "openrouter/qwen/qwen3.8-flash", //                  AA=40  0.15/0.47  1.0M
+      "openrouter/deepseek/deepseek-v4.1-flash", //        AA=39  0.15/0.60  1.0M
+      "openrouter/openai/gpt-6-luna", //                   AA=37  0.10/0.50  1.0M
+      "openrouter/deepseek/deepseek-v4-flash", //          AA=34  0.06/0.13  1.0M
+      "openrouter/inclusionai/ling-3.0-flash" //           AA=25  0.02/0.06  262k
+    ]
   },
 
   // ── Per-family sampling ─────────────────────────────────────────────────
@@ -119,6 +357,8 @@
   //   claude / gpt / gemini → 0.4/0.8 (README example values)
   // Missing families would fall back to provider defaults; listed here so
   // every family is intentionally pinned.
+  // Note: xiaomi/*, upstage/*, tencent/*, inclusionai/*, x-ai/* all resolve to
+  // the `fallback` family (no substring match), so that entry is load-bearing.
   "sampling": {
     "claude": { "temperature": 0.4, "topP": 0.8 },
     "gpt": { "temperature": 0.4, "topP": 0.8 },
