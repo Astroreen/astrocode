@@ -9,11 +9,11 @@ parallel/background orchestration, tmux, git_master, browser_automation, categor
 
 ## Status
 
-Implemented and verified (`bun test`: 157 tests pass, `tsc --noEmit`: 0 errors):
+Implemented and verified (`bun test`: 415 tests pass, `tsc --noEmit`: 0 errors):
 
 - plugin entry (`src/index.ts`) — guards, Sisyphus dynamic-prompt dispatch, sampling,
   builtin-command injection, runtime model fallback
-- model router (`src/models/resolveFamily.ts`) — 7 families
+- model router (`src/models/resolveFamily.ts`) — 9 families
 - version-level model detection (`src/models/resolveVersion.ts`) — `ModelVersion` union +
   pure `resolveModelVersion(modelID)`
 - version-specific Sisyphus builders (`src/prompts/sisyphus/families/versions/*.ts`,
@@ -22,8 +22,9 @@ Implemented and verified (`bun test`: 157 tests pass, `tsc --noEmit`: 0 errors):
   `clampReasoningLevel`, `splitReasoningSuffix`, `reasoningConfigForFamily`
 - model canonicalization (`src/fallback/canonicalize.ts`) — `canonicalizeModelID`,
   `areModelsEquivalent`; fallback never "switches" to a suffix-variant of the failed model
-- error classification (`src/fallback/classify.ts`) — `ErrorClass`, `TERMINAL_QUOTA_PATTERNS`,
-  `classifyError`; one bounded same-model retry for `non_terminal` errors
+- error classification (`src/fallback/classify.ts`) — `ErrorClass`, terminal/transient
+  discriminators over full error evidence (name, message, `responseBody`), `classifyError`;
+  terminal quota rotates immediately, transient errors get bounded same-model retries first
 - AGENTS.md walk-up context (`src/context/agentsmd.ts`) — `findAgentsMdFiles`,
   `buildAgentsMdContext`, `hasAgentsMdContext`
 - idle backoff + abort window (`src/idle/constants.ts`, `src/idle/continue.ts`) — exponential
@@ -52,13 +53,18 @@ Implemented and verified (`bun test`: 157 tests pass, `tsc --noEmit`: 0 errors):
 
 ### Model families
 
-`src/models/resolveFamily.ts` returns one of seven families by `modelID` substring (no provider
-gate):
+`src/models/resolveFamily.ts` returns one of nine families by anchored token segmentation of the
+`modelID` (still no provider gate): the id is lowercased and split on non-alphanumerics into
+whole tokens, and needles match whole tokens only — no substring collisions (`yi` never matches
+`family`; vendor tokens beat `gpt`, so `deepseek/gpt-oss-120b` is `openrouter-generic`, not `gpt`).
+Full rules: `src/models/resolveFamily.ts`.
 
-`claude` | `gpt` | `gemini` | `kimi` | `glm` | `openrouter-generic` | `fallback`
+`claude` | `gpt` | `gemini` | `kimi` | `glm` | `grok` | `minimax` | `openrouter-generic` | `fallback`
 
-`claude` gets no extra guards; the other six get an anti-tool-loop guard + apply-patch guidance
-(copied verbatim from oh-my-openagent's empirically-tuned text). `kimi`/`glm`/`openrouter-generic`
+`claude` gets no extra guards; the other eight get an anti-tool-loop guard plus edit guidance —
+`apply_patch` guidance only for models that actually get `apply_patch` (mirroring opencode's
+tool-visibility rule), `edit`-tool guidance otherwise (both copied verbatim from
+oh-my-openagent's empirically-tuned text). `kimi`/`glm`/`openrouter-generic`
 additionally get a sampling override (`temperature=0.3`, `topP=0.9`) via `isCheapSamplingFamily`.
 
 `src/models/resolveVersion.ts` goes one level deeper: it detects model *versions* within families
@@ -78,7 +84,7 @@ built live from `src/agents/metadata.ts`, so they stay accurate as the agent ros
   detected by scanning `output.system` for the marker `"You are Sisyphus - the Master
   Orchestrator."` (`src/prompts/sisyphus/dispatch.ts`).
 - **Shared skeleton**: `src/prompts/sisyphus/sections.ts` — family-agnostic section builders.
-- **Family builders**: `src/prompts/sisyphus/families/{claude,gpt,glm,kimi,fallback,gemini}.ts`.
+- **Family builders**: `src/prompts/sisyphus/families/{claude,gpt,glm,kimi,grok,minimax,fallback,gemini}.ts`.
   Gemini is not a standalone persona: it reuses the fallback prompt plus Gemini-specific
   override blocks.
 - **Version builders**: `src/prompts/sisyphus/families/versions/*.ts` (13 thin builders, indexed
@@ -98,7 +104,8 @@ server-side by opencode, so the new model continues rather than restarting. See
 `docs/porting-plan.md` § "Fallback module design".
 
 astrocode keeps its settings in its **own config file**, `astrocode.jsonc`, which the plugin
-loads itself (searched in the project root and `.opencode/`) — you do not need to put anything
+loads itself (searched at every level from the project dir up to home, in each directory and its
+`.opencode/`) — you do not need to put anything
 astrocode-specific in `opencode.jsonc`:
 
 ```jsonc
@@ -134,27 +141,61 @@ astrocode-specific in `opencode.jsonc`:
 
 A per-agent `fallback_models` list fully replaces the global chain for that agent (no merge).
 Top-level `agents.<name>.fallback_models` is the **only** place to configure per-agent chains —
-a `fallback.agents` block is ignored. Inline plugin options (the second tuple element in
-`opencode.jsonc`) are still honored and override the file.
+a `fallback.agents` block is ignored. The fallback dispatcher resolves the chain per-agent from
+the failing session's agent — for both primary and child (subagent) sessions. Inline plugin
+options (the second tuple element in `opencode.jsonc`) are still honored and override the file.
 
 **Walk-up multi-layer merge** (`src/config/astrocode.ts`): `collectConfigLayers` walks up from
 the project dir to home (farthest-first) and collects every `astrocode.jsonc`/`astrocode.json`
 found at each level; `mergeConfigLayers` merges them with **nearest wins**. Top-level keys and
-`fallback`/`sampling` are shallow-merged, `agents` is merged per agent,
+`fallback`/`sampling`/`subagents` are shallow-merged, `agents` is merged per agent,
 and arrays (e.g. `fallback_models`) are **full-replaced** by the nearest layer that defines them —
 never concatenated. `loadAstrocodeConfig` merges all layers, then applies inline overrides on top.
+
+**Config reference** (defaults shown):
+
+```jsonc
+{
+  "subagents": {
+    // false (default): subagents NEVER inherit the parent agent's model.
+    // true: restore the old inherit-from-parent behavior.
+    "inherit_parent_model": false
+  },
+  "fallback": {
+    // Same-model retries for transient errors before rotating the chain.
+    "same_model_max_retries": 2,
+    // Waits longer than this skip same-model retry and rotate immediately.
+    "same_model_max_wait_seconds": 300
+  }
+}
+```
 
 Why fallback fires: on a retryable provider error (rate limit, quota, usage limit, credits,
 5xx, overloaded), astrocode resubmits the last user turn on the same session with the next
 chain model. opencode surfaces such failures as `session.error`, as a `message.updated` on an
-errored assistant message, **or** as a `session.status` retry (opencode's own same-model retry
-loop) — astrocode handles all three, switching models proactively on the retry event.
+errored assistant message, as a `message.part.updated` retry part (`RetryPart`), **or** as a
+`session.status` retry (opencode's own same-model retry loop) — astrocode handles
+`session.error`, `message.updated`, `message.part.updated` (RetryPart) and `session.status`
+retries, switching models proactively on the retry event.
 
-**Error classification** (`src/fallback/classify.ts`): `classifyError` returns one of
-`terminal_quota` / `non_terminal` / `context_overflow` / `not_retryable`. `terminal_quota`
-(quota/billing/session-limit wording, incl. Chinese variants) rotates to the next model
-immediately. `non_terminal` (rate limit, overload, 5xx) gets exactly **one** same-model retry
-first — bounded via the `sameModelRetried` flag in `src/fallback/state.ts` — then rotates.
+**Error classification** (`src/fallback/classify.ts`): `classifyError` matches the full error
+evidence (name + message + `responseBody`) in a fixed 7-step order and returns `terminal_quota` /
+`non_terminal` / `context_overflow` / `not_retryable`:
+
+| step | matches | class | fallback action |
+|---|---|---|---|
+| 1 | context-overflow wording | `context_overflow` | never falls back |
+| 2 | transient overrides (Z.ai `1302`/`1305`, `rate_limit_reached_error`) | `non_terminal` | same-model retries first |
+| 3 | terminal discriminators (incl. `FreeUsageLimitError`, `GoUsageLimitError`, `quota_exceeded`, `credit_balance_exhausted`, Z.ai `1113`/`1308`-`1310`/`1316`-`1321`, `weight_exceeds_budget`) | `terminal_quota` | rotate immediately, provider-aware (different provider first) |
+| 4 | HTTP 429/402 without `retry-after` | `terminal_quota` | rotate immediately, provider-aware |
+| 5 | transient discriminators (rate limit, overload, 5xx) | `non_terminal` | same-model retries first |
+| 6 | `isRetryableError` (retryable status/patterns) | `non_terminal` | same-model retries first |
+| 7 | anything else | `not_retryable` | never falls back |
+
+`terminal_quota` → rotate immediately, provider-aware (different provider first). Transient
+`non_terminal` → up to `same_model_max_retries` (default 2) same-model retries while the wait is
+≤ `same_model_max_wait_seconds` (default 300s), otherwise rotate immediately.
+Rotations are never cooldown-throttled; `max_attempts` (default 3) caps rotations per session.
 `context_overflow` and `not_retryable` never fall back.
 
 **Canonicalization** (`src/fallback/canonicalize.ts`): `canonicalizeModelID` strips
@@ -163,12 +204,15 @@ first — bounded via the `sameModelRetried` flag in `src/fallback/state.ts` —
 "switches" to a suffix-variant of the model that just failed (that is not a real fallback).
 
 **Backoff** (`src/fallback/state.ts`): `effectiveCooldownSeconds(base, failures)` doubles the
-configured cooldown per consecutive failure, capped at 2^5 (32x), so a repeatedly failing chain
-backs off instead of hammering providers.
+configured cooldown per consecutive failure, capped at 2^5 (32x). It applies to **same-model
+retries only** — rotations are never cooldown-throttled — and resets after a successful resubmit
+(`resetFailures`), so a repeatedly failing same-model retry backs off instead of hammering
+providers.
 
-**Known gap:** a pre-flight `ProviderModelNotFoundError` (a model id that does not exist) is
-raised by opencode before any assistant message/event is created, so no event fires and
-fallback cannot run. Verify model ids before relying on them.
+**Model-not-found / auth:** `model.?not.?found` / `unknown.?(model|provider)` / `no such model` /
+`404` evidence is treated as retryable and rotates the chain — switching to the next model is the
+obvious fix. **Known gap:** provider auth errors (`ProviderAuthError`) do **not** rotate —
+correct, since switching models won't fix a bad key.
 
 ### Model tuning and extras
 
@@ -197,7 +241,7 @@ fallback cannot run. Verify model ids before relying on them.
   numeric priorities — project `.opencode`/`.claude`/`.agents` skills 60/50/40, user
   `~/.config/opencode`/`~/.claude`/`~/.agents` skills 30/20/10, bundled builtin skills 5.
   `discoverSkillsWithPriority` keeps the highest-priority definition per skill name and logs a
-  collision when a lower-priority copy is dropped (`discoverSkills` remains as a compat wrapper).
+  collision when a lower-priority copy is dropped.
 - **Bundled builtin skills** (`skills/builtin/{commit-message,code-review,verify-before-done}/SKILL.md`):
   always discoverable at the lowest priority tier, so a project/user skill of the same name wins.
 - **Skills as slash commands** (`src/skills/extra.ts`): opencode registers skills for the model's
@@ -206,8 +250,9 @@ fallback cannot run. Verify model ids before relying on them.
   each discovered skill (never clobbers an existing command); invoking it tells the model to load
   that skill via its own tool.
 - **Idle continuation** (`src/idle/continue.ts`): opt-in. On `session.idle`, if the session has
-  unfinished todos, a short continuation prompt is sent on the same session (on the fallback
-  model if one was already used), capped per session. It uses an exponential cooldown
+  unfinished todos, a short continuation prompt is sent on the same session — carrying `agent`
+  and the fallback model (if one was already used), non-blocking (`promptAsync`) — capped per
+  session. It uses an exponential cooldown
   (`CONTINUATION_COOLDOWN_MS` doubling per consecutive failure, capped at `MAX_BACKOFF_EXPONENT`)
   and stops after `MAX_CONSECUTIVE_FAILURES` unproductive sends (reset after
   `FAILURE_RESET_WINDOW_MS`). A user abort (`session.error` with `MessageAbortedError`/`AbortError`)
@@ -289,11 +334,13 @@ The builtin `/start-work` command is injected with `agent: "Atlas - Plan Executo
 
 ### Per-agent model override
 
-Set `agents.<name>.model` in `astrocode.jsonc` (see the config example above). If omitted, the
-agent uses whatever model the calling session/`opencode.jsonc` has configured. Subagents get
-their own agent-config `model` if set, otherwise the primary agent's model. Per-agent
-`fallback_models` apply to subagent sessions too — the fallback dispatcher reads the child
-session's agent name from its last user message.
+Set `agents.<name>.model` in `astrocode.jsonc` (see the config example above). Resolution order
+for every agent entry: `agents.<name>.model` → `subagents.inherit_parent_model` gate → global
+`astrocode.model ?? opencode.jsonc` model. Subagents NEVER inherit the parent agent's model when
+`subagents.inherit_parent_model` is `false` (the default) — each one gets its own configured
+model or the global model. Set `"subagents": { "inherit_parent_model": true }` to restore the old
+inherit-from-parent behavior. Per-agent `fallback_models` apply to subagent sessions too — the
+fallback dispatcher reads the child session's agent name from its last user message.
 
 ### Environment variables
 
@@ -348,14 +395,14 @@ machine — e.g. `home-manager build --dry-run` (or your flake's equivalent, suc
 
 ```bash
 bun install
-bun test                 # 157 tests, all pass
+bun test                 # 415 tests, all pass
 bun run tsc --noEmit     # 0 errors
 ```
 
 ## Repo layout
 
 - `src/index.ts` — plugin entry (system transform, chat.params, config, event, dispose)
-- `src/models/resolveFamily.ts` — model -> family router (7 families)
+- `src/models/resolveFamily.ts` — model -> family router (9 families)
 - `src/models/resolveVersion.ts` — model -> version detector (`ModelVersion` union)
 - `src/prompts/guards.ts` — verbatim defensive guard strings
 - `src/prompts/dump.ts` — `ASTROCODE_DUMP` debug side-channel
