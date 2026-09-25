@@ -7,7 +7,7 @@ interface SessionAttemptState {
   attempts: number;
   lastAttemptAt: number;
   model: string;
-  sameModelRetried: boolean;
+  sameModelAttempts: number;
   consecutiveFailures: number;
 }
 
@@ -20,23 +20,66 @@ const states = new Map<string, SessionAttemptState>();
 const retryKeys = new Map<string, Set<string>>();
 const MAX_RETRY_KEYS_PER_SESSION = 64;
 
+// Hard bound on the per-session maps so a long-running process cannot leak
+// entries across thousands of sessions.
+const MAX_STATES = 1024;
+
+function readStamp(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const stamp = (value as { stamp?: unknown }).stamp;
+  return typeof stamp === "number" ? stamp : undefined;
+}
+
+// Drop the oldest 25% of entries once `map` exceeds `max`. "Oldest" is by
+// `stamp` (or a custom `stampOf`) when values carry one, otherwise Map
+// insertion order (stable sort keeps it). Never throws.
+export function evictOldestByStamp<T>(
+  map: Map<string, T>,
+  max: number = MAX_STATES,
+  stampOf: (value: T) => number | undefined = (value) => readStamp(value),
+): void {
+  if (map.size <= max) return;
+  const dropCount = Math.ceil(map.size * 0.25);
+  const entries = [...map.entries()];
+  entries.sort((a, b) => {
+    const sa = stampOf(a[1]);
+    const sb = stampOf(b[1]);
+    if (sa === undefined || sb === undefined) return 0;
+    return sa - sb;
+  });
+  for (let i = 0; i < dropCount; i += 1) {
+    map.delete(entries[i][0]);
+  }
+}
+
+function evictStates(): void {
+  evictOldestByStamp(states, MAX_STATES, (state) => state.lastAttemptAt);
+}
+
 // Exponential backoff: base cooldown doubles per consecutive failure, capped at
 // 2^5 (32x). Kept in sync with the idle-continuation backoff.
 export function effectiveCooldownSeconds(baseCooldownSeconds: number, failures: number): number {
   return baseCooldownSeconds * 2 ** Math.min(failures, 5);
 }
 
-// True when the session has exhausted max_attempts or the cooldown between
-// attempts has not yet elapsed.
-export function shouldThrottle(
+// True when the session has exhausted max_attempts. Cooldown is NEVER consulted
+// here: rotations must survive a second consecutive failure (the dead-account
+// hop) instead of being self-throttled right when they are needed most.
+export function shouldThrottleRotation(sessionID: string, maxAttempts: number): boolean {
+  const state = states.get(sessionID);
+  if (!state) return false;
+  return state.attempts >= maxAttempts;
+}
+
+// True when the cooldown between same-model attempts has not yet elapsed
+// (exponential per consecutive failure).
+export function shouldThrottleSameModel(
   sessionID: string,
-  maxAttempts: number,
   cooldownSeconds: number,
   now: number = Date.now(),
 ): boolean {
   const state = states.get(sessionID);
   if (!state) return false;
-  if (state.attempts >= maxAttempts) return true;
   const elapsedSeconds = (now - state.lastAttemptAt) / 1000;
   return elapsedSeconds < effectiveCooldownSeconds(cooldownSeconds, state.consecutiveFailures);
 }
@@ -52,9 +95,12 @@ export function recordAttempt(
     attempts,
     lastAttemptAt: now,
     model,
-    sameModelRetried: state?.sameModelRetried ?? false,
+    // A rotation switches models: the new model gets a fresh same-model retry
+    // budget.
+    sameModelAttempts: 0,
     consecutiveFailures: (state?.consecutiveFailures ?? 0) + 1,
   });
+  evictStates();
   return attempts;
 }
 
@@ -66,28 +112,32 @@ export function getLastFallbackModel(sessionID: string): string | undefined {
   return states.get(sessionID)?.model;
 }
 
-export function hasSameModelRetried(sessionID: string): boolean {
-  return states.get(sessionID)?.sameModelRetried ?? false;
+export function getSameModelAttempts(sessionID: string): number {
+  return states.get(sessionID)?.sameModelAttempts ?? 0;
 }
 
-export function markSameModelRetried(sessionID: string): void {
+// Returns the new same-model attempt count. Creates the state entry when the
+// session has none yet (a first failure can precede any rotation).
+export function incrementSameModelAttempts(sessionID: string): number {
   const state = states.get(sessionID);
   if (state) {
-    state.sameModelRetried = true;
-    return;
+    state.sameModelAttempts += 1;
+    return state.sameModelAttempts;
   }
   states.set(sessionID, {
     attempts: 0,
     lastAttemptAt: Date.now(),
     model: "",
-    sameModelRetried: true,
+    sameModelAttempts: 1,
     consecutiveFailures: 0,
   });
+  evictStates();
+  return 1;
 }
 
-export function resetSameModelRetried(sessionID: string): void {
+export function resetSameModelAttempts(sessionID: string): void {
   const state = states.get(sessionID);
-  if (state) state.sameModelRetried = false;
+  if (state) state.sameModelAttempts = 0;
 }
 
 export function resetFailures(sessionID: string): void {
@@ -111,6 +161,7 @@ export function markRetryKey(sessionID: string, key: string): boolean {
   if (seen.has(key)) return false;
   if (seen.size >= MAX_RETRY_KEYS_PER_SESSION) seen.clear();
   seen.add(key);
+  evictOldestByStamp(retryKeys);
   return true;
 }
 

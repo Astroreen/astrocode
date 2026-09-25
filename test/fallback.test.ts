@@ -11,9 +11,13 @@ import {
   clearAll,
   clearRetryKeys,
   markRetryKey,
-  markSameModelRetried,
   recordAttempt,
-  shouldThrottle,
+  getAttemptCount,
+  getSameModelAttempts,
+  incrementSameModelAttempts,
+  resetSameModelAttempts,
+  shouldThrottleRotation,
+  shouldThrottleSameModel,
   effectiveCooldownSeconds,
 } from "../src/fallback/state";
 import {
@@ -186,6 +190,81 @@ describe("effectiveCooldownSeconds", () => {
   });
 });
 
+describe("fallback state (T8)", () => {
+  beforeEach(() => clearAll());
+
+  test("shouldThrottleRotation never fires below maxAttempts, regardless of elapsed time", () => {
+    const t0 = 1_000_000;
+    recordAttempt("s1", "a/one", t0);
+    expect(shouldThrottleRotation("s1", 5)).toBe(false);
+    // cooldown window is irrelevant: even deep inside it rotation is free
+    expect(shouldThrottleSameModel("s1", 60, t0 + 1_000)).toBe(true);
+    expect(shouldThrottleRotation("s1", 5)).toBe(false);
+    // ...and after hours have passed
+    expect(shouldThrottleRotation("s1", 5)).toBe(false);
+    expect(shouldThrottleRotation("missing", 0)).toBe(false);
+    // exhaustion is the only trigger
+    recordAttempt("s1", "a/one", t0 + 2_000);
+    recordAttempt("s1", "a/one", t0 + 3_000);
+    recordAttempt("s1", "a/one", t0 + 4_000);
+    recordAttempt("s1", "a/one", t0 + 5_000);
+    expect(shouldThrottleRotation("s1", 5)).toBe(true);
+  });
+
+  test("shouldThrottleSameModel follows effectiveCooldownSeconds with injected now", () => {
+    const t0 = 1_000_000;
+    recordAttempt("s1", "a/one", t0);
+    // consecutiveFailures 1 -> window is 60 * 2 = 120s
+    expect(effectiveCooldownSeconds(60, 1)).toBe(120);
+    expect(shouldThrottleSameModel("s1", 60, t0 + 119_000)).toBe(true);
+    expect(shouldThrottleSameModel("s1", 60, t0 + 120_000)).toBe(false);
+    expect(shouldThrottleSameModel("missing", 60, t0)).toBe(false);
+  });
+
+  test("same-model attempts increment and reset", () => {
+    expect(getSameModelAttempts("s1")).toBe(0);
+    expect(incrementSameModelAttempts("s1")).toBe(1);
+    expect(incrementSameModelAttempts("s1")).toBe(2);
+    expect(getSameModelAttempts("s1")).toBe(2);
+    resetSameModelAttempts("s1");
+    expect(getSameModelAttempts("s1")).toBe(0);
+  });
+
+  test("recordAttempt zeroes the same-model budget (new model, fresh retries)", () => {
+    incrementSameModelAttempts("s1");
+    incrementSameModelAttempts("s1");
+    expect(getSameModelAttempts("s1")).toBe(2);
+    recordAttempt("s1", "b/two");
+    expect(getSameModelAttempts("s1")).toBe(0);
+  });
+
+  test("states map never exceeds 1024 entries over 5000 recordAttempt calls", () => {
+    const total = 5000;
+    const ids: string[] = [];
+    for (let i = 0; i < total; i += 1) ids.push(`s${i}`);
+    for (let i = 0; i < total; i += 1) {
+      recordAttempt(ids[i], "a/one", 1_000_000 + i);
+      let survivors = 0;
+      for (let j = 0; j <= i; j += 1) {
+        if (getAttemptCount(ids[j]) > 0) survivors += 1;
+      }
+      expect(survivors).toBeLessThanOrEqual(1024);
+    }
+    // oldest-by-lastAttemptAt evicted first, newest kept
+    expect(getAttemptCount("s0")).toBe(0);
+    expect(getAttemptCount(`s${total - 1}`)).toBe(1);
+  });
+
+  test("retry keys map is bounded the same way (insertion order eviction)", () => {
+    for (let i = 0; i < 1100; i += 1) {
+      expect(markRetryKey(`rk${i}`, "k")).toBe(true);
+    }
+    // oldest session keys were evicted -> accepted again; newest still deduped
+    expect(markRetryKey("rk0", "k")).toBe(true);
+    expect(markRetryKey("rk1099", "k")).toBe(false);
+  });
+});
+
 describe("decideFallback", () => {
   beforeEach(() => clearAll());
 
@@ -234,14 +313,15 @@ describe("decideFallback", () => {
   test("throttled during cooldown", () => {
     const config = configWith({ max_attempts: 5, cooldown_seconds: 60 });
     recordAttempt("s1", "openai/gpt-4o");
-    expect(shouldThrottle("s1", 5, 60)).toBe(true);
+    expect(shouldThrottleSameModel("s1", 60)).toBe(true);
+    expect(shouldThrottleRotation("s1", 5)).toBe(false);
     expect(decideFallback(config, "s1", { message: "overloaded" }).reason).toBe("throttled");
   });
 
   test("rotates through the chain by attempt count", () => {
     const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
     recordAttempt("s1", "a/one");
-    markSameModelRetried("s1");
+    incrementSameModelAttempts("s1");
     const decision = decideFallback(config, "s1", { message: "overloaded" });
     expect(decision.retry).toBe(true);
     expect(decision.model).toBe("b/two");
@@ -257,7 +337,7 @@ describe("decideFallback", () => {
   test("non-terminal error after 1 attempt rotates the chain", () => {
     const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
     recordAttempt("s1", "a/one");
-    markSameModelRetried("s1");
+    incrementSameModelAttempts("s1");
     const decision = decideFallback(config, "s1", { message: "overloaded" });
     expect(decision.retry).toBe(true);
     expect(decision.model).toBe("b/two");
@@ -272,7 +352,7 @@ describe("decideFallback", () => {
     expect(first.retry).toBe(false);
     expect(first.reason).toBe("same-model-retry");
 
-    markSameModelRetried("s1");
+    incrementSameModelAttempts("s1");
 
     const second = decideFallback(config, "s1", error);
     expect(second.retry).toBe(true);

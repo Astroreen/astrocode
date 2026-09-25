@@ -24,11 +24,12 @@ import {
   clearRetryKeys,
   getAttemptCount,
   getLastFallbackModel,
-  hasSameModelRetried,
-  markSameModelRetried,
+  getSameModelAttempts,
+  incrementSameModelAttempts,
   recordAttempt,
-  resetSameModelRetried,
-  shouldThrottle,
+  resetSameModelAttempts,
+  shouldThrottleRotation,
+  shouldThrottleSameModel,
 } from "./state";
 import { setSessionFallbackModel } from "./session-model";
 import { getChildSessionAgent, isChildSession } from "./subagent";
@@ -99,7 +100,12 @@ export function decideFallback(
   if (!isRetryableError(error, config.retry_on_errors)) {
     return { retry: false, reason: "not-retryable", errorClass };
   }
-  if (shouldThrottle(sessionID, config.max_attempts, config.cooldown_seconds)) {
+  // Cooldown halves of the old combined check: rotations are attempt-capped,
+  // same-model retries are cooldown-capped (T9 narrows each call site further).
+  if (
+    shouldThrottleRotation(sessionID, config.max_attempts) ||
+    shouldThrottleSameModel(sessionID, config.cooldown_seconds)
+  ) {
     return { retry: false, reason: "throttled", errorClass };
   }
 
@@ -110,7 +116,7 @@ export function decideFallback(
 
   // Transient (non-terminal) errors get one same-model attempt first: let
   // opencode's own retry handle it before we rotate the fallback chain.
-  if (errorClass === "non_terminal" && !hasSameModelRetried(sessionID)) {
+  if (errorClass === "non_terminal" && getSameModelAttempts(sessionID) === 0) {
     return { retry: false, reason: "same-model-retry", errorClass };
   }
 
@@ -237,7 +243,10 @@ export async function dispatchFallback(
         detail: getErrorMessage(error).slice(0, 200),
       };
     }
-    if (shouldThrottle(sessionID, config.max_attempts, config.cooldown_seconds)) {
+    if (
+      shouldThrottleRotation(sessionID, config.max_attempts) ||
+      shouldThrottleSameModel(sessionID, config.cooldown_seconds)
+    ) {
       return { retry: false, reason: "throttled" };
     }
 
@@ -254,7 +263,7 @@ export async function dispatchFallback(
       last.model,
     );
     if (decision.reason === "same-model-retry") {
-      markSameModelRetried(sessionID);
+      incrementSameModelAttempts(sessionID);
       return decision;
     }
     if (!decision.retry || !decision.model) {
@@ -332,7 +341,7 @@ export async function dispatchFallback(
     if (result.error) {
       return { retry: true, reason: "resubmit-failed", model: decision.model };
     }
-    resetSameModelRetried(sessionID);
+    resetSameModelAttempts(sessionID);
     clearRetryKeys(sessionID);
     return decision;
   } catch {
