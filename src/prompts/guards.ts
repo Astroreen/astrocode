@@ -18,17 +18,23 @@ Repeated identical tool calls are a loop signal, not persistence.
 export const APPLY_PATCH_GUIDANCE =
   "Use `apply_patch` for file edits. Keep patches small and match the surrounding lines exactly so verification passes.";
 
-export function getGuards(family: ModelFamily): string[] {
-  switch (family) {
-    case "claude":
-      return [];
-    case "gpt":
-    case "gemini":
-    case "kimi":
-    case "glm":
-    case "openrouter-generic":
-    case "fallback":
-    default:
-      return [TOOL_LOOP_GUARD, APPLY_PATCH_GUIDANCE];
-  }
+export const EDIT_TOOL_GUIDANCE =
+  "Use the `edit` tool for file edits. Keep patches small and match the surrounding lines exactly so verification passes.";
+
+/**
+ * Gate mirrors the real opencode tool-visibility rule
+ * (`packages/opencode/src/tool/registry.ts:295-301` — source of truth):
+ * `apply_patch` is shown iff the modelID includes "gpt-" but not "oss" and not
+ * "gpt-4"; `edit`/`write` are shown otherwise. Guidance must never mention a
+ * tool the model does not have. The gate is intentionally substring-based on
+ * `gpt-` (same as opencode's) — `family` is not used for this decision beyond
+ * the claude special case (claude gets no edit guidance at all).
+ */
+export function getGuards(family: ModelFamily, modelID: string): string[] {
+  const useApplyPatch = modelID.toLowerCase().includes("gpt-")
+    && !modelID.toLowerCase().includes("oss")
+    && !modelID.toLowerCase().includes("gpt-4");
+  if (useApplyPatch) return [TOOL_LOOP_GUARD, APPLY_PATCH_GUIDANCE];
+  if (family === "claude") return [];
+  return [TOOL_LOOP_GUARD, EDIT_TOOL_GUIDANCE];
 }

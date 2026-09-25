@@ -501,7 +501,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
           modelID: input?.model?.id ?? "",
         });
 
-        const guards = getGuards(family);
+        const guards = getGuards(family, input?.model?.id ?? "");
         for (const guard of guards) {
           if (!output.system.includes(guard)) {
             output.system.push(guard);
