@@ -80,6 +80,14 @@ export function reasoningConfigForFamily(
   if (family === "gpt") {
     return { reasoningEffort: gptReasoningEffort(level) };
   }
+  // Grok reasoning is controlled by the model id, not params; MiniMax M-series
+  // takes no reasoning params either.
+  if (family === "grok") {
+    return {};
+  }
+  if (family === "minimax") {
+    return {};
+  }
   return {};
 }
 

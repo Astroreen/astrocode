@@ -1,7 +1,7 @@
 /**
  * Model-family router (AD-3). Pure, total, deterministic: never throws, always
- * returns exactly one of the literal families via case-insensitive substring
- * matching on the model ID. No network, no model-registry reads.
+ * returns exactly one of the literal families via token-grammar matching on
+ * the model ID. No network, no model-registry reads.
  *
  * CALLER NOTE (for src/index.ts): the `modelID` field here is just a local
  * pure-function argument name. The real opencode runtime hook
@@ -11,17 +11,20 @@
  * `resolveFamily({ providerID: model.providerID, modelID: model.id })`.
  * See docs/spike-findings.md "Root cause: modelID field bug".
  *
- * TAXONOMY (expanded from the original 3-bucket claude/cheap-openrouter/
- * fallback split): matches oh-my-openagent's actual per-family prompt-engine
- * scope (claude / gpt / gemini / kimi / glm each got their own dynamic-prompt
- * delta file). `openrouter-generic` groups the remaining
- * deepseek/qwen/minimax/yi/zhipu models that oh-my-openagent did NOT give a
- * dedicated delta file to (they fell through to its `default.ts`/fallback
- * builder). Detection is by model ID only, NOT gated on providerID==
- * "openrouter" - a native OpenAI/Google-hosted model still gets its family's
- * treatment, since the family taxonomy now drives BOTH the sampling tweak
- * (see isCheapSamplingFamily) AND the Sisyphus dynamic-prompt engine's
- * per-family delta content, not just a cost bucket.
+ * TAXONOMY (9 families): claude / gpt / gemini / kimi / glm / grok / minimax /
+ * openrouter-generic / fallback. The model ID is lowercased and tokenized on
+ * non-alphanumerics (`o3-mini` -> `["o3","mini"]`); needles match whole tokens
+ * (hyphenated ids match as whole token sequences, `dall-e-3` -> `["dall","e"]`),
+ * so short needles never fire inside words (`yi` does not match `family`).
+ * Rules run first-executed-wins in a fixed order — vendor needles beat `gpt`,
+ * so `deepseek/gpt-oss-120b` is openrouter-generic, not gpt.
+ *
+ * `providerID` is accepted and preserved in the signature but NOT used for
+ * routing — no provider gate (a native OpenAI/Google-hosted model still gets
+ * its family's treatment). The openrouter slug form `vendor/model-id` works
+ * because `vendor` becomes a token: `anthropic/claude-3.5` -> rule "claude".
+ * The family taxonomy drives BOTH the sampling tweak (isCheapSamplingFamily)
+ * AND the Sisyphus dynamic-prompt engine's per-family delta content.
  */
 
 export type ModelFamily =
@@ -30,31 +33,62 @@ export type ModelFamily =
   | "gemini"
   | "kimi"
   | "glm"
+  | "grok"
+  | "minimax"
   | "openrouter-generic"
   | "fallback";
-
-const OPENROUTER_GENERIC_MODELS = [
-  "deepseek",
-  "qwen",
-  "minimax",
-  "yi",
-  "zhipu",
-] as const;
 
 export function resolveFamily(model: {
   providerID: string;
   modelID: string;
 }): ModelFamily {
-  const modelID = (model?.modelID ?? "").toLowerCase();
+  const tokens = (model?.modelID ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const joined = ` ${tokens.join(" ")} `;
+  const has = (token: string): boolean => tokens.includes(token);
+  const hasSeq = (sequence: string): boolean =>
+    joined.includes(` ${sequence} `);
 
-  if (modelID.includes("claude")) return "claude";
-  if (modelID.includes("gpt")) return "gpt";
-  if (modelID.includes("gemini")) return "gemini";
-  if (modelID.includes("kimi")) return "kimi";
-  if (modelID.includes("glm")) return "glm";
-  if (OPENROUTER_GENERIC_MODELS.some((needle) => modelID.includes(needle))) {
-    return "openrouter-generic";
+  if (
+    has("claude") ||
+    has("opus") ||
+    has("sonnet") ||
+    has("haiku") ||
+    has("fable") ||
+    has("mythos")
+  ) {
+    return "claude";
   }
+  if (
+    has("kimi") ||
+    has("moonshot") ||
+    has("k2") ||
+    has("k3") ||
+    (has("swe") && has("2"))
+  ) {
+    return "kimi";
+  }
+  if (has("glm") || has("zhipu") || has("bigmodel")) return "glm";
+  if (has("grok")) return "grok";
+  if (has("minimax")) return "minimax";
+  if (has("gemini") || has("gemma")) return "gemini";
+  if (has("deepseek") || has("qwen") || has("yi")) return "openrouter-generic";
+  if (
+    has("gpt") ||
+    has("chatgpt") ||
+    has("dalle") ||
+    has("openai") ||
+    has("codex") ||
+    hasSeq("dall e") ||
+    joined.includes(" text embedding") ||
+    hasSeq("text davinci") ||
+    tokens.some((token) => /^o[1-9]$/.test(token))
+  ) {
+    return "gpt";
+  }
+  if (has("openrouter")) return "openrouter-generic";
 
   return "fallback";
 }
@@ -63,8 +97,8 @@ export function resolveFamily(model: {
  * Families that get the steadier chat.params sampling override
  * (temperature/topP) - the same set the old "cheap-openrouter" bucket
  * covered (kimi/glm/deepseek/qwen/minimax/yi/zhipu), now split across
- * kimi/glm/openrouter-generic. claude/gpt/gemini/fallback keep whatever
- * defaults the core/provider already set.
+ * kimi/glm/openrouter-generic. claude/gpt/gemini/grok/minimax/fallback keep
+ * whatever defaults the core/provider already set.
  */
 export function isCheapSamplingFamily(family: ModelFamily): boolean {
   return (
