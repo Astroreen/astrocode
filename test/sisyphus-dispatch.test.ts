@@ -4,6 +4,10 @@ import {
   buildDynamicSisyphusPrompt,
   isSisyphusSession,
 } from "../src/prompts/sisyphus/dispatch";
+import { buildGrokSisyphusPrompt } from "../src/prompts/sisyphus/families/grok";
+import { buildMinimaxSisyphusPrompt } from "../src/prompts/sisyphus/families/minimax";
+import { buildGrok45SisyphusPrompt } from "../src/prompts/sisyphus/families/versions/grok-4-5";
+import { buildMinimaxSisyphusPrompt as buildMinimaxVersionSisyphusPrompt } from "../src/prompts/sisyphus/families/versions/minimax";
 
 describe("isSisyphusSession", () => {
   test("detects the marker in the system array", () => {
@@ -78,5 +82,54 @@ describe("buildDynamicSisyphusPrompt", () => {
     const fallback = buildDynamicSisyphusPrompt("fallback");
     expect(fallback.length).toBeGreaterThan(500);
     expect(fallback.includes("<model_version_calibration")).toBe(false);
+  });
+});
+
+describe("grok and minimax families", () => {
+  test('("grok","grok-4-9") falls through to the grok family builder', () => {
+    const grok = buildDynamicSisyphusPrompt("grok", "grok-4-9");
+    expect(grok).toBe(buildGrokSisyphusPrompt());
+    expect(grok.includes("<model_version_calibration")).toBe(false);
+  });
+
+  test("grok family block is non-empty and distinct from fallback", () => {
+    const grok = buildDynamicSisyphusPrompt("grok", "grok-9");
+    expect(grok.length).toBeGreaterThan(500);
+    expect(grok).not.toBe(buildDynamicSisyphusPrompt("fallback"));
+    expect(grok).toBe(buildGrokSisyphusPrompt());
+    expect(grok.includes("<grok_calibration>")).toBe(true);
+  });
+
+  test('("grok","grok-4-5") version builder output wins over the family builder', () => {
+    const versioned = buildDynamicSisyphusPrompt("grok", "grok-4-5");
+    expect(versioned).toBe(buildGrok45SisyphusPrompt());
+    expect(versioned.includes('version="grok-4-5"')).toBe(true);
+    expect(versioned).not.toBe(buildGrokSisyphusPrompt());
+  });
+
+  test('("minimax","minimax-m2") resolves to the minimax builder', () => {
+    // resolveModelVersion("minimax-m2") === "minimax", so the shipped minimax
+    // version prompt keeps priority over the family prompt (version-first).
+    const out = buildDynamicSisyphusPrompt("minimax", "minimax-m2");
+    expect(out).toBe(buildMinimaxVersionSisyphusPrompt());
+    expect(out.includes('version="minimax"')).toBe(true);
+  });
+
+  test("minimax family case wires the new minimax family builder", () => {
+    const family = buildDynamicSisyphusPrompt("minimax");
+    expect(family).toBe(buildMinimaxSisyphusPrompt());
+    expect(family.length).toBeGreaterThan(500);
+    expect(family).not.toBe(buildDynamicSisyphusPrompt("fallback"));
+    expect(family.includes("<minimax_calibration>")).toBe(true);
+    expect(family.includes("<model_version_calibration")).toBe(false);
+  });
+
+  test("grok and minimax family prompts differ from each other", () => {
+    expect(buildGrokSisyphusPrompt()).not.toBe(buildMinimaxSisyphusPrompt());
+  });
+
+  test("new family builders never contain the sisyphus marker", () => {
+    expect(buildGrokSisyphusPrompt().includes(SISYPHUS_MARKER)).toBe(false);
+    expect(buildMinimaxSisyphusPrompt().includes(SISYPHUS_MARKER)).toBe(false);
   });
 });

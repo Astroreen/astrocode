@@ -23,6 +23,8 @@ import { buildGlmSisyphusPrompt } from "./families/glm";
 import { buildKimiSisyphusPrompt } from "./families/kimi";
 import { buildFallbackSisyphusPrompt } from "./families/fallback";
 import { buildGeminiSisyphusPrompt } from "./families/gemini";
+import { buildGrokSisyphusPrompt } from "./families/grok";
+import { buildMinimaxSisyphusPrompt } from "./families/minimax";
 
 // Verbatim substring from agents/sisyphus.md's <Role> block (line 8). Kept in
 // sync manually — if sisyphus.md's opening line ever changes, update this too.
@@ -53,6 +55,10 @@ export function buildDynamicSisyphusPrompt(
       return buildKimiSisyphusPrompt();
     case "gemini":
       return buildGeminiSisyphusPrompt();
+    case "grok":
+      return buildGrokSisyphusPrompt();
+    case "minimax":
+      return buildMinimaxSisyphusPrompt();
     case "openrouter-generic":
     case "fallback":
     default:
