@@ -147,7 +147,8 @@ describe("classify", () => {
     expect(classifyError({ message: "You've hit your session limit · resets 4am" }, [429])).toBe(
       "terminal_quota",
     );
-    expect(classifyError({ message: "429 Too Many Requests" }, [429])).toBe("non_terminal");
+    expect(classifyError({ message: "429 Too Many Requests" }, [429])).toBe("terminal_quota");
+    expect(classifyError({ message: "The engine is currently overloaded", data: { responseHeaders: { "retry-after": "5" } } }, [429])).toBe("non_terminal");
     expect(classifyError({ message: "maximum context length exceeded" }, [])).toBe(
       "context_overflow",
     );
@@ -247,7 +248,7 @@ describe("decideFallback", () => {
   });
 
   test("non-terminal error with 0 attempts -> same-model-retry", () => {
-    const decision = decideFallback(configWith(), "s1", { message: "429 Too Many Requests" });
+    const decision = decideFallback(configWith(), "s1", { message: "overloaded" });
     expect(decision.retry).toBe(false);
     expect(decision.reason).toBe("same-model-retry");
     expect(decision.errorClass).toBe("non_terminal");
@@ -257,7 +258,7 @@ describe("decideFallback", () => {
     const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
     recordAttempt("s1", "a/one");
     markSameModelRetried("s1");
-    const decision = decideFallback(config, "s1", { message: "429 Too Many Requests" });
+    const decision = decideFallback(config, "s1", { message: "overloaded" });
     expect(decision.retry).toBe(true);
     expect(decision.model).toBe("b/two");
     expect(decision.errorClass).toBe("non_terminal");
@@ -265,7 +266,7 @@ describe("decideFallback", () => {
 
   test("same-model retry is bounded to one per failure episode", () => {
     const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
-    const error = { message: "429 Too Many Requests" };
+    const error = { message: "overloaded" };
 
     const first = decideFallback(config, "s1", error);
     expect(first.retry).toBe(false);
@@ -418,7 +419,7 @@ describe("dispatchFallback", () => {
     });
 
     const decision = await dispatchFallback(client as never, config, "s2", {
-      message: "429 Too Many Requests",
+      message: "overloaded",
     });
 
     expect(decision.reason).toBe("same-model-retry");
@@ -574,7 +575,7 @@ describe("dispatchFallback", () => {
       models: ["openrouter/x/y"],
       cooldown_seconds: 0,
     });
-    const error = { message: "429 Too Many Requests" };
+    const error = { message: "overloaded" };
 
     // First transient error -> one same-model retry, no resubmission, no pin.
     const first = await dispatchFallback(client as never, config, "s7", error);
