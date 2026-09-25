@@ -202,12 +202,22 @@ const astrocodePlugin: Plugin = async (input, options) => {
         );
         for (const [displayName, persona] of Object.entries(displayPersonas)) {
           const existing = agents[displayName] ?? {};
+          // Model cascade (issue #2): explicit per-agent model wins; otherwise
+          // the global model (astrocode `model` overrides the opencode root
+          // model) is pinned UNLESS the user opts into opencode's parent-model
+          // inheritance via subagents.inherit_parent_model (escape hatch ->
+          // resolvedModel stays undefined -> no `model` key -> task.ts keeps
+          // next.model ?? parent). `persona.model` is exactly the per-agent
+          // settings.model resolved by the toAgentConfigs lookup above.
+          const explicitModel = persona.model;
+          const globalModel = astrocodeConfig.model ?? defaultModel;
+          const resolvedModel =
+            explicitModel ??
+            (astrocodeConfig.subagents.inherit_parent_model
+              ? undefined
+              : globalModel);
           const agentConfig = {
-            ...personaToAgentConfig(
-              persona,
-              (persona as PersonaDefinition & { model?: string }).model,
-              undefined,
-            ),
+            ...personaToAgentConfig(persona, resolvedModel, undefined),
             ...existing,
             description: persona.description,
             mode: persona.mode,
@@ -217,10 +227,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
           // Family reasoning/thinking options (claude extended thinking, gpt
           // reasoningEffort). Only when we know the effective model.
           if (astrocodeConfig.reasoning.enabled) {
-            const agentModel =
-              (persona as PersonaDefinition & { model?: string }).model ??
-              astrocodeConfig.model ??
-              defaultModel;
+            const agentModel = resolvedModel;
             const { base, level } = splitReasoningSuffix(agentModel ?? "");
             const family = familyForModel(base);
             if (family) {

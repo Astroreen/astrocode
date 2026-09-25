@@ -13,6 +13,75 @@ import {
   resetIdleContinuationState,
 } from "../src/idle/continue";
 import { clearChildSessions, isChildSession } from "../src/fallback/subagent";
+import { AGENT_DISPLAY_NAMES } from "../src/agents/personas";
+
+describe("subagent model cascade", () => {
+  const PERSONA_NAMES = Object.values(AGENT_DISPLAY_NAMES);
+
+  async function buildAgentRoster(
+    fixture: Record<string, unknown>,
+    root: Record<string, unknown> = {},
+  ): Promise<Record<string, Record<string, unknown>>> {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-cascade-"));
+    try {
+      mkdirSync(join(dir, ".opencode"), { recursive: true });
+      writeFileSync(
+        join(dir, ".opencode", "astrocode.jsonc"),
+        JSON.stringify(fixture),
+      );
+      const hooks = await astrocodePlugin({ directory: dir } as any);
+      const cfg = root as any;
+      await hooks.config!(cfg);
+      return cfg.agent as Record<string, Record<string, unknown>>;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("explicit per-agent model wins; global model cascades to every other persona", async () => {
+    const agents = await buildAgentRoster({
+      model: "openrouter/deepseek-chat",
+      subagents: { inherit_parent_model: false },
+      agents: { explore: { model: "moonshotai/kimi-k2" } },
+    });
+
+    expect(agents["explore"].model).toBe("moonshotai/kimi-k2");
+    for (const name of PERSONA_NAMES) {
+      if (name === "explore") continue;
+      expect(agents[name].model).toBe("openrouter/deepseek-chat");
+    }
+  });
+
+  test("inherit_parent_model: true restores parent inheritance for non-explicit personas", async () => {
+    const agents = await buildAgentRoster({
+      model: "openrouter/deepseek-chat",
+      subagents: { inherit_parent_model: true },
+      agents: { explore: { model: "moonshotai/kimi-k2" } },
+    });
+
+    expect(agents["explore"].model).toBe("moonshotai/kimi-k2");
+    for (const name of PERSONA_NAMES) {
+      if (name === "explore") continue;
+      expect("model" in agents[name]).toBe(false);
+    }
+  });
+
+  test("opencode root model cascades when the astrocode model is absent", async () => {
+    const agents = await buildAgentRoster({}, { model: "opencode/gpt-5.5" });
+
+    for (const name of PERSONA_NAMES) {
+      expect(agents[name].model).toBe("opencode/gpt-5.5");
+    }
+  });
+
+  test("no model anywhere leaves entries without a model key", async () => {
+    const agents = await buildAgentRoster({});
+
+    for (const name of PERSONA_NAMES) {
+      expect("model" in agents[name]).toBe(false);
+    }
+  });
+});
 
 describe("astrocode plugin — experimental.chat.system.transform", () => {
   test("appends guards for cheap-openrouter model, preserves base", async () => {
