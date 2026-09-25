@@ -66,7 +66,7 @@ import {
   buildAgentsMdContext,
   hasAgentsMdContext,
 } from "./context/agentsmd";
-import { getErrorName } from "./fallback/classify";
+import { getErrorMessage, getErrorName } from "./fallback/classify";
 import {
   DEFAULT_AGENT,
   DEMOTED_NATIVE_AGENTS,
@@ -309,8 +309,9 @@ const astrocodePlugin: Plugin = async (input, options) => {
 
     // Real mid-task model fallback (docs/porting-plan.md "Fallback module
     // design"). opencode surfaces a failed model call either as `session.error`,
-    // as a `message.updated` on an assistant message carrying `.error`, or (for
-    // retryable same-model retries) as `session.status` with type "retry".
+    // as a `message.updated` on an assistant message carrying `.error`, as a
+    // `retry` part in `message.part.updated`, or (for retryable same-model
+    // retries) as `session.status` with type "retry".
     event: async ({ event }) => {
       try {
         // Idle continuation is independent of fallback enablement.
@@ -414,6 +415,25 @@ const astrocodePlugin: Plugin = async (input, options) => {
           return;
         }
 
+        if (event.type === "message.part.updated") {
+          const part = event.properties?.part;
+          if (part?.type === "retry" && part.error) {
+            const target = part.sessionID;
+            if (!target) return;
+            const key = `retry:${part.attempt}:${getErrorMessage(part.error).trim().slice(0, 200)}`;
+            if (markRetryKey(target, key)) {
+              const decision = await dispatchFallback(
+                input.client,
+                fallbackConfig,
+                target,
+                part.error,
+              );
+              logDecision("message.part.updated", decision);
+            }
+          }
+          return;
+        }
+
         // opencode retries the SAME model on rate limits before giving up. If the
         // retry message is retryable, switch models proactively instead of
         // waiting for the final failure.
@@ -431,6 +451,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
             "session.status",
             await dispatchFallback(input.client, fallbackConfig, target, {
               message: status.message,
+              next: status.next,
             }),
           );
         }

@@ -284,7 +284,7 @@ function fakeClient(todos: unknown[]) {
     client: {
       session: {
         todo: async () => ({ data: todos }),
-        prompt: async (args: unknown) => {
+        promptAsync: async (args: unknown) => {
           sent.push(args);
           return { data: {} };
         },

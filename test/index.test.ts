@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import {
   getSessionModelState,
   setSessionFallbackModel,
 } from "../src/fallback/session-model";
+import { clearAll as clearFallbackState } from "../src/fallback/state";
 import {
   maybeContinueIdle,
   resetIdleContinuationState,
@@ -290,7 +291,7 @@ describe("astrocode plugin — abort detection", () => {
         todo: async () => ({
           data: [{ status: "pending", content: "task" }],
         }),
-        prompt: async () => ({ data: {} }),
+        promptAsync: async () => ({ data: {} }),
       },
     } as any;
 
@@ -563,5 +564,147 @@ describe("astrocode plugin — subagent session tracking", () => {
     } as any);
 
     expect(isChildSession("child-3")).toBe(false);
+  });
+});
+
+describe("astrocode plugin — RetryPart and status.next surfaces", () => {
+  const CHAIN = [
+    "anthropic/claude-sonnet-4-6",
+    "openrouter/one/a",
+    "openrouter/two/b",
+  ];
+
+  const userMessage = {
+    info: {
+      role: "user",
+      agent: "Atlas - Plan Executor",
+      model: { providerID: "anthropic", modelID: "claude-sonnet-4-6" },
+    },
+    parts: [{ type: "text", text: "do the thing" }],
+  };
+
+  const enabledOptions = {
+    fallback: {
+      enabled: true,
+      models: CHAIN,
+      cooldown_seconds: 0,
+    },
+  };
+
+  function clientWith(
+    messages: unknown[],
+    opts: { failResubmit?: boolean } = {},
+  ) {
+    const calls = {
+      promptAsync: 0,
+      lastBody: undefined as Record<string, unknown> | undefined,
+    };
+    const client = {
+      session: {
+        messages: async () => ({ data: messages }),
+        abort: async () => ({}),
+        promptAsync: async (options: { body: Record<string, unknown> }) => {
+          calls.promptAsync += 1;
+          calls.lastBody = options.body;
+          return opts.failResubmit
+            ? { error: { name: "BadRequestError", data: {} } }
+            : { data: {} };
+        },
+      },
+    };
+    return { client, calls };
+  }
+
+  function retryPartEvent(sessionID: string, attempt: number) {
+    return {
+      event: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: `part-${sessionID}-${attempt}`,
+            sessionID,
+            messageID: "msg-1",
+            type: "retry",
+            attempt,
+            error: {
+              name: "APIError",
+              data: {
+                message: "usage limit reached",
+                isRetryable: false,
+                responseBody:
+                  '{"error":{"type":"FreeUsageLimitError","message":"free usage limit"}}',
+              },
+            },
+            time: { created: 1 },
+          },
+        },
+      },
+    } as any;
+  }
+
+  beforeEach(() => {
+    clearAllSessionModels();
+    clearFallbackState();
+    clearChildSessions();
+  });
+
+  test("RetryPart with a terminal FreeUsageLimitError resubmits on chain model #2", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+
+    await hooks.event!(retryPartEvent("rp-1", 1));
+
+    // Chain #1 is the primary that just failed (terminal quota skips it), so
+    // the rotation lands on #2.
+    expect(calls.promptAsync).toBe(1);
+    expect(calls.lastBody?.model).toEqual({
+      providerID: "openrouter",
+      modelID: "one/a",
+    });
+    expect(getSessionModelState("rp-1")?.currentModel).toBe("openrouter/one/a");
+  });
+
+  test("identical RetryPart (same attempt + message) dispatches only once", async () => {
+    const { client, calls } = clientWith([userMessage], { failResubmit: true });
+    // failResubmit on purpose: a successful resubmit clears the retry keys (T9
+    // success path), so a later identical event would be treated as a NEW
+    // failure by design. The dedup itself is what is under test here — the
+    // second event must not reach dispatchFallback at all.
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+
+    await hooks.event!(retryPartEvent("rp-2", 1));
+    await hooks.event!(retryPartEvent("rp-2", 1));
+
+    expect(calls.promptAsync).toBe(1);
+  });
+
+  test("session.status retry with a far-future next rotates instead of same-model retry", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+
+    await hooks.event!({
+      event: {
+        type: "session.status",
+        properties: {
+          sessionID: "st-1",
+          status: {
+            type: "retry",
+            attempt: 1,
+            message: "overloaded",
+            next: Date.now() + 9_000_000,
+          },
+        },
+      },
+    } as any);
+
+    // A same-model retry never resubmits (promptAsync would stay 0); the
+    // 9000s wait exceeds same_model_max_wait_seconds (300s), so the decision
+    // is a rotation onto chain model #2.
+    expect(calls.promptAsync).toBe(1);
+    expect(calls.lastBody?.model).toEqual({
+      providerID: "openrouter",
+      modelID: "one/a",
+    });
+    expect(getSessionModelState("st-1")?.currentModel).toBe("openrouter/one/a");
   });
 });

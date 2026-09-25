@@ -12,6 +12,7 @@
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { TextPartInput } from "@opencode-ai/sdk";
 import { getLastFallbackModel } from "../fallback/state";
+import { getChildSessionAgent } from "../fallback/subagent";
 import { parseModelString } from "../models/model-id";
 import {
   ABORT_WINDOW_MS,
@@ -164,12 +165,15 @@ export async function maybeContinueIdle(
     // Continue on the fallback model if one was already used this session.
     const fallbackModel = getLastFallbackModel(sessionID);
     const parsedModel = parseModelString(fallbackModel);
+    const agent = getChildSessionAgent(sessionID);
 
-    const body = parsedModel
-      ? { model: parsedModel, parts: [note] }
-      : { parts: [note] };
+    const body = {
+      ...(parsedModel ? { model: parsedModel } : {}),
+      ...(agent ? { agent } : {}),
+      parts: [note],
+    };
 
-    const send = await client.session.prompt({ path: { id: sessionID }, body });
+    const send = await client.session.promptAsync({ path: { id: sessionID }, body });
     if (send.error) return { continued: false, reason: "send-failed" };
 
     counts.set(sessionID, getIdleContinuationCount(sessionID) + 1);

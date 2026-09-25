@@ -6,6 +6,7 @@ import {
   recordAbort,
 } from "../src/idle/continue";
 import { ABORT_WINDOW_MS, MAX_CONSECUTIVE_FAILURES } from "../src/idle/constants";
+import { clearChildSessions, registerChildSession } from "../src/fallback/subagent";
 
 function fakeClient(initialTodos: unknown[]) {
   let todos = initialTodos;
@@ -18,7 +19,7 @@ function fakeClient(initialTodos: unknown[]) {
     client: {
       session: {
         todo: async () => ({ data: todos }),
-        prompt: async (args: unknown) => {
+        promptAsync: async (args: unknown) => {
           sent.push(args);
           return { data: {} };
         },
@@ -131,5 +132,34 @@ describe("idle continuation abort window", () => {
     // The stale entry was cleared; a fresh call within no window still proceeds.
     const next = await maybeContinueIdle(client, "a3", { now: 100_000 });
     expect(next.continued).toBe(true);
+  });
+});
+
+describe("idle continuation resubmit body", () => {
+  beforeEach(() => {
+    resetIdleContinuationState();
+    clearChildSessions();
+  });
+
+  test("body carries the registered child agent and goes through promptAsync", async () => {
+    const { client, sent } = fakeClient(pending(2));
+    registerChildSession("b1", "explore");
+
+    const result = await maybeContinueIdle(client, "b1", { now: 0 });
+    expect(result.continued).toBe(true);
+    expect(sent.length).toBe(1);
+
+    const call = sent[0] as { body: Record<string, unknown> };
+    expect(call.body.agent).toBe("explore");
+  });
+
+  test("body omits agent when the session is not a registered child", async () => {
+    const { client, sent } = fakeClient(pending(2));
+
+    const result = await maybeContinueIdle(client, "b2", { now: 0 });
+    expect(result.continued).toBe(true);
+
+    const call = sent[0] as { body: Record<string, unknown> };
+    expect("agent" in call.body).toBe(false);
   });
 });
