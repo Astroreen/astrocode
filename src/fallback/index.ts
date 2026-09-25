@@ -17,7 +17,12 @@ import type { TextPartInput } from "@opencode-ai/sdk";
 import { getAgentConfigKey } from "../agents/personas";
 import { parseModelString } from "../models/model-id";
 import { areModelsEquivalent } from "./canonicalize";
-import { classifyError, getErrorMessage, isRetryableError } from "./classify";
+import {
+  classifyError,
+  getErrorMessage,
+  getWaitSeconds,
+  isRetryableError,
+} from "./classify";
 import type { ErrorClass } from "./classify";
 import type { FallbackConfig } from "./config";
 import {
@@ -27,9 +32,9 @@ import {
   getSameModelAttempts,
   incrementSameModelAttempts,
   recordAttempt,
+  resetFailures,
   resetSameModelAttempts,
   shouldThrottleRotation,
-  shouldThrottleSameModel,
 } from "./state";
 import { setSessionFallbackModel } from "./session-model";
 import { getChildSessionAgent, isChildSession } from "./subagent";
@@ -72,12 +77,31 @@ export function resolveFallbackModels(
 // just failed (`currentModel`) and any model already recorded from a previous
 // attempt in this session (`lastUsed`). Equivalence is canonical, so a
 // suffix-variant of the failed model is not treated as a real fallback.
+// On terminal quota pass `preferDifferentProviderFrom`: candidates from other
+// providers are stably moved to the front, so one dead account does not burn
+// the rest of its provider's models first.
 export function pickFallbackModel(
   candidates: string[],
   currentModel?: string,
   lastUsed?: string,
+  preferDifferentProviderFrom?: string,
 ): string | undefined {
-  const remaining = candidates.filter(
+  let ordered = candidates;
+  if (preferDifferentProviderFrom) {
+    const prefer = preferDifferentProviderFrom.toLowerCase();
+    ordered = candidates
+      .filter(
+        (candidate) =>
+          parseModelString(candidate)?.providerID.toLowerCase() !== prefer,
+      )
+      .concat(
+        candidates.filter(
+          (candidate) =>
+            parseModelString(candidate)?.providerID.toLowerCase() === prefer,
+        ),
+      );
+  }
+  const remaining = ordered.filter(
     (candidate) =>
       !areModelsEquivalent(candidate, currentModel) &&
       !areModelsEquivalent(candidate, lastUsed),
@@ -100,12 +124,9 @@ export function decideFallback(
   if (!isRetryableError(error, config.retry_on_errors)) {
     return { retry: false, reason: "not-retryable", errorClass };
   }
-  // Cooldown halves of the old combined check: rotations are attempt-capped,
-  // same-model retries are cooldown-capped (T9 narrows each call site further).
-  if (
-    shouldThrottleRotation(sessionID, config.max_attempts) ||
-    shouldThrottleSameModel(sessionID, config.cooldown_seconds)
-  ) {
+  // Rotations are attempt-capped only: a cooldown here self-throttles the
+  // second consecutive hop exactly when rotation is needed most.
+  if (shouldThrottleRotation(sessionID, config.max_attempts)) {
     return { retry: false, reason: "throttled", errorClass };
   }
 
@@ -114,10 +135,21 @@ export function decideFallback(
     return { retry: false, reason: "no-fallback-models", errorClass };
   }
 
-  // Transient (non-terminal) errors get one same-model attempt first: let
-  // opencode's own retry handle it before we rotate the fallback chain.
-  if (errorClass === "non_terminal" && getSameModelAttempts(sessionID) === 0) {
-    return { retry: false, reason: "same-model-retry", errorClass };
+  // Transient (non-terminal) errors get same-model retries first: let opencode's
+  // own retry handle them before rotating the fallback chain. A wait beyond
+  // `same_model_max_wait_seconds` or a spent budget rotates immediately instead.
+  if (errorClass === "non_terminal") {
+    const wait = getWaitSeconds(error);
+    const longWait = wait !== undefined && wait > config.same_model_max_wait_seconds;
+    if (!longWait && getSameModelAttempts(sessionID) < config.same_model_max_retries) {
+      return {
+        retry: false,
+        reason: "same-model-retry",
+        errorClass,
+        detail: wait === undefined ? "wait=unknown" : `wait=${Math.round(wait)}s`,
+      };
+    }
+    // long wait or budget spent → rotate immediately (Q1 amendment)
   }
 
   // Advance through the chain by attempt count, then skip the current model.
@@ -125,7 +157,14 @@ export function decideFallback(
   const offset = attempts % candidates.length;
   const rotated = candidates.slice(offset).concat(candidates.slice(0, offset));
   const lastUsed = getLastFallbackModel(sessionID);
-  const model = pickFallbackModel(rotated, currentModel, lastUsed);
+  const model = pickFallbackModel(
+    rotated,
+    currentModel,
+    lastUsed,
+    errorClass === "terminal_quota"
+      ? parseModelString(currentModel ?? "")?.providerID
+      : undefined,
+  );
   if (!model) {
     return { retry: false, reason: "chain-exhausted", errorClass };
   }
@@ -243,10 +282,7 @@ export async function dispatchFallback(
         detail: getErrorMessage(error).slice(0, 200),
       };
     }
-    if (
-      shouldThrottleRotation(sessionID, config.max_attempts) ||
-      shouldThrottleSameModel(sessionID, config.cooldown_seconds)
-    ) {
+    if (shouldThrottleRotation(sessionID, config.max_attempts)) {
       return { retry: false, reason: "throttled" };
     }
 
@@ -342,6 +378,7 @@ export async function dispatchFallback(
       return { retry: true, reason: "resubmit-failed", model: decision.model };
     }
     resetSameModelAttempts(sessionID);
+    resetFailures(sessionID);
     clearRetryKeys(sessionID);
     return decision;
   } catch {

@@ -1,10 +1,11 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { parseFallbackConfig, DEFAULT_FALLBACK_CONFIG } from "../src/fallback/config";
-import { isRetryableError, getStatusCode, getErrorMessage, classifyError } from "../src/fallback/classify";
+import { isRetryableError, getStatusCode, getErrorMessage, getWaitSeconds, classifyError } from "../src/fallback/classify";
 import {
   decideFallback,
   dispatchFallback,
   parseModelString,
+  pickFallbackModel,
   resolveFallbackModels,
 } from "../src/fallback";
 import {
@@ -171,6 +172,24 @@ describe("model helpers", () => {
     expect(parseModelString("trailing/")).toBeUndefined();
   });
 
+  test("pickFallbackModel prefers a different provider when told to", () => {
+    const chain = [
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-haiku-4",
+      "google/gemini-2.5-pro",
+    ];
+    expect(
+      pickFallbackModel(chain, "anthropic/claude-sonnet-5", "anthropic/claude-opus-5-5"),
+    ).toBe("anthropic/claude-haiku-4");
+    expect(
+      pickFallbackModel(chain, "anthropic/claude-sonnet-5", "anthropic/claude-opus-5-5", "anthropic"),
+    ).toBe("google/gemini-2.5-pro");
+    expect(
+      pickFallbackModel(chain, "anthropic/claude-sonnet-5", "anthropic/claude-opus-5-5", "google"),
+    ).toBe("anthropic/claude-haiku-4");
+  });
+
   test("resolveFallbackModels: per-agent replaces global", () => {
     const config = configWith();
     // runtime carrier (normally bridged from top-level agents[].fallback_models)
@@ -310,16 +329,23 @@ describe("decideFallback", () => {
     expect(decideFallback(config, "s1", { message: "overloaded" }).reason).toBe("throttled");
   });
 
-  test("throttled during cooldown", () => {
+  test("same-model cooldown never throttles a decision", () => {
     const config = configWith({ max_attempts: 5, cooldown_seconds: 60 });
     recordAttempt("s1", "openai/gpt-4o");
     expect(shouldThrottleSameModel("s1", 60)).toBe(true);
     expect(shouldThrottleRotation("s1", 5)).toBe(false);
-    expect(decideFallback(config, "s1", { message: "overloaded" }).reason).toBe("throttled");
+    const decision = decideFallback(config, "s1", { message: "overloaded" });
+    expect(decision.reason).toBe("same-model-retry");
+    expect(decision.detail).toBe("wait=unknown");
   });
 
   test("rotates through the chain by attempt count", () => {
-    const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
+    const config = configWith({
+      models: ["a/one", "b/two"],
+      max_attempts: 5,
+      cooldown_seconds: 0,
+      same_model_max_retries: 1,
+    });
     recordAttempt("s1", "a/one");
     incrementSameModelAttempts("s1");
     const decision = decideFallback(config, "s1", { message: "overloaded" });
@@ -335,7 +361,12 @@ describe("decideFallback", () => {
   });
 
   test("non-terminal error after 1 attempt rotates the chain", () => {
-    const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
+    const config = configWith({
+      models: ["a/one", "b/two"],
+      max_attempts: 5,
+      cooldown_seconds: 0,
+      same_model_max_retries: 1,
+    });
     recordAttempt("s1", "a/one");
     incrementSameModelAttempts("s1");
     const decision = decideFallback(config, "s1", { message: "overloaded" });
@@ -344,20 +375,123 @@ describe("decideFallback", () => {
     expect(decision.errorClass).toBe("non_terminal");
   });
 
-  test("same-model retry is bounded to one per failure episode", () => {
-    const config = configWith({ models: ["a/one", "b/two"], max_attempts: 5, cooldown_seconds: 0 });
-    const error = { message: "overloaded" };
+  test("transient retry-after=30s retries same model up to the budget, then rotates", () => {
+    const config = configWith({
+      models: ["a/one", "b/two"],
+      max_attempts: 5,
+      same_model_max_retries: 2,
+    });
+    const error = {
+      data: {
+        message: "The engine is currently overloaded, please try again later",
+        statusCode: 429,
+        responseBody: '{"error":{"type":"engine_overloaded_error"}}',
+        responseHeaders: { "retry-after": "30" },
+      },
+    };
 
-    const first = decideFallback(config, "s1", error);
+    const first = decideFallback(config, "s1", error, undefined, "a/one");
     expect(first.retry).toBe(false);
     expect(first.reason).toBe("same-model-retry");
+    expect(first.detail).toBe("wait=30s");
 
     incrementSameModelAttempts("s1");
 
-    const second = decideFallback(config, "s1", error);
-    expect(second.retry).toBe(true);
-    expect(second.model).toBe("a/one");
-    expect(second.reason).toBe("retry");
+    const second = decideFallback(config, "s1", error, undefined, "a/one");
+    expect(second.retry).toBe(false);
+    expect(second.reason).toBe("same-model-retry");
+
+    incrementSameModelAttempts("s1");
+
+    const third = decideFallback(config, "s1", error, undefined, "a/one");
+    expect(third.retry).toBe(true);
+    expect(third.reason).toBe("retry");
+    expect(third.model).toBe("b/two");
+  });
+
+  test("transient error with a long wait skips same-model retry and rotates", () => {
+    const config = configWith({ models: ["a/one", "b/two"] });
+    const error = {
+      data: {
+        message: "The engine is currently overloaded, please try again later",
+        statusCode: 429,
+        responseBody: '{"error":{"type":"engine_overloaded_error"}}',
+        responseHeaders: { "retry-after": "7200" },
+      },
+    };
+
+    const decision = decideFallback(config, "s1", error, undefined, "a/one");
+    expect(decision.errorClass).toBe("non_terminal");
+    expect(decision.retry).toBe(true);
+    expect(decision.reason).toBe("retry");
+    expect(decision.model).toBe("b/two");
+  });
+
+  test("terminal quota with wait=28800s rotates immediately on the first failure", () => {
+    const config = configWith({ models: ["a/one", "b/two", "c/three"] });
+    const error = {
+      data: {
+        message: "Rate limit exceeded. Please try again later. · resets 4:20pm",
+        statusCode: 429,
+        responseBody: '{"type":"error","error":{"type":"FreeUsageLimitError"}}',
+        responseHeaders: { "retry-after": "28800" },
+      },
+    };
+    expect(getWaitSeconds(error)).toBe(28800);
+
+    const decision = decideFallback(config, "s1", error, undefined, "a/one");
+    expect(decision.errorClass).toBe("terminal_quota");
+    expect(decision.retry).toBe(true);
+    expect(decision.reason).toBe("retry");
+    expect(decision.model).toBe("b/two");
+  });
+
+  test("terminal quota is never cooldown-throttled (second hop)", () => {
+    const config = configWith({
+      models: [
+        "anthropic/claude-opus-5-5",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-haiku-4",
+      ],
+    });
+    recordAttempt("s1", "anthropic/claude-opus-5-5");
+    expect(shouldThrottleSameModel("s1", 60)).toBe(true);
+    expect(shouldThrottleRotation("s1", 3)).toBe(false);
+
+    const decision = decideFallback(
+      config,
+      "s1",
+      { message: "You've hit your session limit · resets 6pm" },
+      undefined,
+      "anthropic/claude-sonnet-5",
+    );
+    expect(decision.reason).not.toBe("throttled");
+    expect(decision.retry).toBe(true);
+    expect(decision.reason).toBe("retry");
+    expect(decision.model).toBe("anthropic/claude-haiku-4");
+  });
+
+  test("terminal quota prefers a different provider over remaining same-provider models", () => {
+    const config = configWith({
+      models: [
+        "anthropic/claude-opus-5-5",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-haiku-4",
+        "google/gemini-2.5-pro",
+      ],
+    });
+    recordAttempt("s1", "anthropic/claude-opus-5-5");
+
+    const decision = decideFallback(
+      config,
+      "s1",
+      { message: "You've hit your session limit · resets 6pm" },
+      undefined,
+      "anthropic/claude-sonnet-5",
+    );
+    expect(decision.retry).toBe(true);
+    expect(decision.model).toBe("google/gemini-2.5-pro");
+    expect(decision.model).not.toBe("anthropic/claude-haiku-4");
   });
 });
 
@@ -507,7 +641,7 @@ describe("dispatchFallback", () => {
     expect(getSessionModelState("s2")).toBeUndefined();
   });
 
-  test("immediate repeat is throttled by cooldown (no duplicate dispatch)", async () => {
+  test("repeat failure on a single-model chain is chain-exhausted (no duplicate dispatch)", async () => {
     const { client, calls } = clientWith([userMessage]);
     const config = parseFallbackConfig({
       enabled: true,
@@ -519,7 +653,7 @@ describe("dispatchFallback", () => {
     await dispatchFallback(client as never, config, "s3", error);
     const second = await dispatchFallback(client as never, config, "s3", error);
 
-    expect(second.reason).toBe("throttled");
+    expect(second.reason).toBe("chain-exhausted");
     expect(calls.promptAsync).toBe(1);
   });
 
@@ -628,6 +762,7 @@ describe("dispatchFallback", () => {
       enabled: true,
       models: ["openrouter/x/y"],
       cooldown_seconds: 0,
+      same_model_max_retries: 1,
     });
     const error = {
       message:
@@ -654,6 +789,7 @@ describe("dispatchFallback", () => {
       enabled: true,
       models: ["openrouter/x/y"],
       cooldown_seconds: 0,
+      same_model_max_retries: 1,
     });
     const error = { message: "overloaded" };
 
