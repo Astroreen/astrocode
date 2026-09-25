@@ -17,6 +17,8 @@
 // Process-local: a plugin restart forgets children, which is acceptable (the
 // same trade-off the attempt state in ./state.ts makes).
 
+import { evictOldestByStamp } from "./state";
+
 interface ChildSessionState {
   agent?: string;
 }
@@ -25,6 +27,7 @@ const children = new Map<string, ChildSessionState>();
 
 export function registerChildSession(sessionID: string, agent?: string): void {
   children.set(sessionID, { agent });
+  evictOldestByStamp(children);
 }
 
 // Returns true when `info` describes a child session (i.e. carries a non-empty

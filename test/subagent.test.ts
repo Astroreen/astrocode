@@ -67,4 +67,15 @@ describe("child session registry", () => {
     clearChildSessions();
     expect(isChildSession("child-5")).toBe(false);
   });
+
+  test("registration beyond the cap drops the oldest 25%", () => {
+    for (let i = 0; i < 1025; i++) {
+      registerChildSession(`ev-${i}`, "explore");
+    }
+    expect(isChildSession("ev-0")).toBe(false);
+    expect(isChildSession("ev-256")).toBe(false);
+    expect(isChildSession("ev-257")).toBe(true);
+    expect(isChildSession("ev-1024")).toBe(true);
+    expect(getChildSessionAgent("ev-1024")).toBe("explore");
+  });
 });

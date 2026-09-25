@@ -15,6 +15,8 @@
 // Process-local: a plugin restart forgets the pin, which is acceptable (the
 // session then simply re-detects the limit on its next turn).
 
+import { evictOldestByStamp } from "./state";
+
 export interface SessionModelState {
   /** Model the session was on when the terminal limit was hit. */
   originalModel: string;
@@ -41,6 +43,7 @@ export function setSessionFallbackModel(
     currentModel: fallbackModel,
     pinnedAt: now,
   });
+  evictOldestByStamp(states, undefined, (state) => state.pinnedAt);
 }
 
 export function getSessionModelState(

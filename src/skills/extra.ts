@@ -62,20 +62,29 @@ export function linkExtraSkillDirs(
 
     for (const entry of entries) {
       const skillDir = join(source, entry);
+      const target = join(targetDir, entry);
       try {
         if (!statSync(skillDir).isDirectory()) continue;
         if (!existsSync(join(skillDir, "SKILL.md"))) continue;
 
-        const target = join(targetDir, entry);
         if (existsSync(target)) {
           report.skipped.push(entry);
           continue;
         }
         mkdirSync(targetDir, { recursive: true });
+      } catch (err) {
+        report.errors.push(`${entry}: ${String(err)}`);
+        continue;
+      }
+      try {
         symlinkSync(skillDir, target, "dir");
         report.linked.push(entry);
       } catch (err) {
-        report.errors.push(`${entry}: ${String(err)}`);
+        if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+          report.skipped.push(entry);
+        } else {
+          report.errors.push(`${entry}: ${String(err)}`);
+        }
       }
     }
   }
@@ -236,14 +245,6 @@ export function discoverSkillsWithPriority(sources: SkillSource[]): DiscoveredSk
   }
 
   return [...winners.values()].sort((a, b) => a.name.localeCompare(b.name));
-}
-
-export function discoverSkills(dirs: string[]): DiscoveredSkill[] {
-  const sources: SkillSource[] = [];
-  for (let i = 0; i < dirs.length; i++) {
-    sources.push({ dir: dirs[i] ?? "", priority: dirs.length - i, label: `dir-${i}` });
-  }
-  return discoverSkillsWithPriority(sources);
 }
 
 export function standardSkillSources(

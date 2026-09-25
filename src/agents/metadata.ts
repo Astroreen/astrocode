@@ -2,7 +2,7 @@
  * Static single-source-of-truth metadata for astrocode's built-in subagents.
  * Mirrors oh-my-openagent's `agent.metadata` concept (keyTrigger/cost/
  * useWhen/avoidWhen/triggers) per locked decision §7. Consumed by
- * src/prompts/sisyphus/dynamicSections.ts to generate Sisyphus's Key
+ * src/prompts/sisyphus/sections.ts to generate Sisyphus's Key
  * Triggers / Tool Selection Table / Delegation Table at runtime instead of
  * duplicating this content by hand inside agents/sisyphus.md.
  *

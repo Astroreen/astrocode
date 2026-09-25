@@ -98,7 +98,13 @@ function formatArgs(args: unknown[]): string {
 
 // Fire-and-forget: logging must never throw or block the host session.
 function swallow(result: unknown): void {
-  void Promise.resolve(result).catch(() => {});
+  void Promise.resolve(result).catch((err) => {
+    try {
+      console.error("[astrocode:log]", err);
+    } catch {
+      /* never throw */
+    }
+  });
 }
 
 function emit(level: LogLevel, args: unknown[]): void {

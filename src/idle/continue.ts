@@ -11,7 +11,7 @@
 
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { TextPartInput } from "@opencode-ai/sdk";
-import { getLastFallbackModel } from "../fallback/state";
+import { getLastFallbackModel, evictOldestByStamp } from "../fallback/state";
 import { getChildSessionAgent } from "../fallback/subagent";
 import { parseModelString } from "../models/model-id";
 import {
@@ -41,6 +41,7 @@ function getState(sessionID: string): IdleSessionState {
   if (!state) {
     state = { consecutiveFailures: 0, pendingFailureCheck: false };
     states.set(sessionID, state);
+    evictOldestByStamp(states);
   }
   return state;
 }
@@ -177,6 +178,7 @@ export async function maybeContinueIdle(
     if (send.error) return { continued: false, reason: "send-failed" };
 
     counts.set(sessionID, getIdleContinuationCount(sessionID) + 1);
+    evictOldestByStamp(counts);
     state.lastInjectedAt = now;
     state.lastIncompleteCount = incomplete.length;
     state.pendingFailureCheck = true;

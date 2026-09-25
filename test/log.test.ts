@@ -184,6 +184,33 @@ describe("log routing with a client", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("rejected app.log surfaces via console.error with no unhandled rejection", async () => {
+    delete process.env.ASTROCODE_LOG_LEVEL;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const sinks = capture();
+    try {
+      const client: LogClient = {
+        app: {
+          log: () => Promise.reject(new Error("log sink down")),
+        },
+      };
+      configureLogger(client);
+      log.info("hello");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toHaveLength(0);
+      expect(sinks.err.mock.calls.length).toBeGreaterThan(0);
+      expect(sinks.err.mock.calls[0]?.[0]).toBe("[astrocode:log]");
+    } finally {
+      sinks.restore();
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("toast forwards to client.tui.showToast", () => {
     const { client, toasts } = stubClient();
     configureLogger(client);

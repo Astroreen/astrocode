@@ -13,7 +13,6 @@ import { buildEnvContext, hasEnvContext, ENV_CONTEXT_MARKER } from "../src/env/c
 import {
   EXTRA_SKILL_PRIORITY,
   linkExtraSkillDirs,
-  discoverSkills,
   discoverSkillsWithPriority,
   skillCommandTemplate,
   standardSkillSources,
@@ -62,6 +61,42 @@ describe("linkExtraSkillDirs", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  test("linkExtraSkillDirs is idempotent under concurrent double-load", () => {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-double-"));
+    const source = join(root, "source");
+    const target = join(root, "target");
+    mkdirSync(join(source, "good-skill"), { recursive: true });
+    writeFileSync(join(source, "good-skill", "SKILL.md"), "# good");
+
+    const first = linkExtraSkillDirs([source], target);
+    expect(first.linked).toEqual(["good-skill"]);
+    expect(first.errors).toEqual([]);
+
+    const second = linkExtraSkillDirs([source], target);
+    expect(second.skipped).toEqual(first.linked);
+    expect(second.errors).toEqual([]);
+    expect(second.linked).toEqual([]);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("dangling symlink at target is a skip (EEXIST), not an error", () => {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-eexist-"));
+    const source = join(root, "source");
+    const target = join(root, "target");
+    mkdirSync(join(source, "good-skill"), { recursive: true });
+    writeFileSync(join(source, "good-skill", "SKILL.md"), "# good");
+    mkdirSync(target, { recursive: true });
+    symlinkSync(join(root, "nowhere"), join(target, "good-skill"), "dir");
+
+    const report = linkExtraSkillDirs([source], target);
+    expect(report.skipped).toContain("good-skill");
+    expect(report.errors).toEqual([]);
+    expect(report.linked).toEqual([]);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
   test("empty list is a no-op", () => {
     const report = linkExtraSkillDirs([]);
     expect(report).toEqual({ linked: [], skipped: [], errors: [] });
@@ -79,7 +114,7 @@ describe("discoverSkills", () => {
     mkdirSync(join(root, "plain"), { recursive: true });
     writeFileSync(join(root, "plain", "SKILL.md"), "# no frontmatter\n");
 
-    const skills = discoverSkills([root]);
+    const skills = discoverSkillsWithPriority([{ dir: root, priority: 1, label: "test" }]);
     expect(skills.length).toBe(1);
     expect(skills[0]?.name).toBe("caveman");
     expect(skills[0]?.description).toBe("Ultra-compressed mode. Cuts tokens 65%.");
@@ -88,7 +123,10 @@ describe("discoverSkills", () => {
   });
 
   test("dedupes and tolerates missing dirs", () => {
-    expect(discoverSkills(["/definitely/not/here"]).length).toBe(0);
+    expect(
+      discoverSkillsWithPriority([{ dir: "/definitely/not/here", priority: 1, label: "test" }])
+        .length,
+    ).toBe(0);
   });
 
   test("higher-priority source wins on a name collision", () => {
@@ -111,26 +149,6 @@ describe("discoverSkills", () => {
       expect(skills[0]?.source).toBe("high");
       expect(skills[0]?.priority).toBe(60);
       expect(spy).toHaveBeenCalledTimes(1);
-    } finally {
-      spy.mockRestore();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("legacy discoverSkills keeps first-dir-wins", () => {
-    const root = mkdtempSync(join(tmpdir(), "astrocode-legacy-"));
-    const first = join(root, "first");
-    const second = join(root, "second");
-    mkdirSync(join(first, "dup"), { recursive: true });
-    mkdirSync(join(second, "dup"), { recursive: true });
-    writeFileSync(join(first, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
-    writeFileSync(join(second, "dup", "SKILL.md"), "---\nname: dup\n---\nbody\n");
-
-    const spy = spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const skills = discoverSkills([first, second]);
-      expect(skills.length).toBe(1);
-      expect(skills[0]?.location).toBe(join(first, "dup", "SKILL.md"));
     } finally {
       spy.mockRestore();
       rmSync(root, { recursive: true, force: true });
@@ -233,7 +251,7 @@ describe("skillCommandTemplate (oh-my parity)", () => {
         join(dir, "SKILL.md"),
         "---\nname: caveman-commit\ndescription: commit gen\n---\nWrite commits terse.\n",
       );
-      const skills = discoverSkills([root]);
+      const skills = discoverSkillsWithPriority([{ dir: root, priority: 1, label: "test" }]);
       expect(skills.length).toBe(1);
 
       const template = skillCommandTemplate(skills[0]!);
@@ -268,7 +286,7 @@ describe("skillCommandTemplate (oh-my parity)", () => {
       const dir = join(root, "empty");
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "SKILL.md"), "---\nname: empty\n---\n   \n");
-      const skills = discoverSkills([root]);
+      const skills = discoverSkillsWithPriority([{ dir: root, priority: 1, label: "test" }]);
       expect(skills.length).toBe(1);
       expect(skillCommandTemplate(skills[0]!)).toBe(thinSkillCommandTemplate("empty"));
     } finally {

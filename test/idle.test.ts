@@ -3,6 +3,7 @@ import {
   maybeContinueIdle,
   resetIdleContinuationState,
   getIdleBackoffState,
+  getIdleContinuationCount,
   recordAbort,
 } from "../src/idle/continue";
 import { ABORT_WINDOW_MS, MAX_CONSECUTIVE_FAILURES } from "../src/idle/constants";
@@ -161,5 +162,25 @@ describe("idle continuation resubmit body", () => {
 
     const call = sent[0] as { body: Record<string, unknown> };
     expect("agent" in call.body).toBe(false);
+  });
+});
+
+describe("idle continuation map eviction", () => {
+  beforeEach(() => {
+    resetIdleContinuationState();
+  });
+
+  test("counts and states beyond the cap drop the oldest 25%", async () => {
+    for (let i = 0; i < 1025; i++) {
+      const { client } = fakeClient(pending(1));
+      await maybeContinueIdle(client, `ev-${i}`, { now: 1_000_000 + i });
+    }
+    expect(getIdleContinuationCount("ev-0")).toBe(0);
+    expect(getIdleContinuationCount("ev-256")).toBe(0);
+    expect(getIdleContinuationCount("ev-257")).toBe(1);
+    expect(getIdleContinuationCount("ev-1024")).toBe(1);
+    expect(getIdleBackoffState("ev-0").lastInjectedAt).toBeUndefined();
+    expect(getIdleBackoffState("ev-257").lastInjectedAt).toBeDefined();
+    expect(getIdleBackoffState("ev-1024").lastInjectedAt).toBeDefined();
   });
 });

@@ -550,6 +550,17 @@ describe("session-model pin", () => {
   test("unknown session is not pinned", () => {
     expect(isFallbackPinActive("nope", 60)).toBe(false);
   });
+
+  test("pins beyond the cap drop the oldest-by-pin 25%", () => {
+    const base = 1_000_000;
+    for (let i = 0; i < 1025; i++) {
+      setSessionFallbackModel(`ev-${i}`, "a/b", "c/d", base - i);
+    }
+    expect(getSessionModelState("ev-0")).toBeDefined();
+    expect(getSessionModelState("ev-767")).toBeDefined();
+    expect(getSessionModelState("ev-768")).toBeUndefined();
+    expect(getSessionModelState("ev-1024")).toBeUndefined();
+  });
 });
 
 describe("dispatchFallback", () => {
