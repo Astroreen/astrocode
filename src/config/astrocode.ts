@@ -47,6 +47,8 @@ export interface AstrocodeConfig {
   agents: Record<string, AgentSettings>;
   /** Global default model applied to agents with no per-agent `model`. */
   model?: string;
+  /** Subagent model inheritance; opt-in escape hatch (default: no inheritance). */
+  subagents: { inherit_parent_model: boolean };
   /** Per-family sampling overrides; unknown families fall back to defaults. */
   sampling: Record<string, SamplingSettings>;
   /** Extra directories scanned for `<name>/SKILL.md` and symlinked in. */
@@ -60,6 +62,7 @@ export interface AstrocodeConfig {
 export const EMPTY_ASTROCODE_CONFIG: AstrocodeConfig = {
   fallback: parseFallbackConfig(undefined),
   agents: {},
+  subagents: { inherit_parent_model: false },
   sampling: {},
   skills: { extraDirs: [] },
   idleContinuation: { enabled: false },
@@ -271,6 +274,9 @@ function mergeConfigLayers(
       } else if (key === "sampling") {
         const far = isPlainObject(out.sampling) ? out.sampling : {};
         out.sampling = isPlainObject(value) ? { ...far, ...value } : far;
+      } else if (key === "subagents") {
+        const far = isPlainObject(out.subagents) ? out.subagents : {};
+        out.subagents = isPlainObject(value) ? { ...far, ...value } : far;
       } else {
         out[key] = value;
       }
@@ -332,6 +338,13 @@ export function loadAstrocodeConfig(
     ...parseSampling(inline.sampling),
   };
 
+  // `subagents` shallow-merge like fallback/sampling: nearest wins per field.
+  // Parsed strictly: only a literal `true` enables inheritance.
+  const fileSubagents = isPlainObject(fileRaw.subagents) ? fileRaw.subagents : {};
+  const inlineSubagents = isPlainObject(inline.subagents) ? inline.subagents : {};
+  const inheritParentModel =
+    { ...fileSubagents, ...inlineSubagents }.inherit_parent_model === true;
+
   const fileSkills = (fileRaw.skills as Record<string, unknown>) ?? {};
   const inlineSkills = (inline.skills as Record<string, unknown>) ?? {};
   const extraDirs =
@@ -372,6 +385,7 @@ export function loadAstrocodeConfig(
     fallback,
     agents,
     model: asString(inline.model) ?? asString(fileRaw.model),
+    subagents: { inherit_parent_model: inheritParentModel },
     sampling,
     skills: { extraDirs },
     idleContinuation:

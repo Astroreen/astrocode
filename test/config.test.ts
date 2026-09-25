@@ -39,6 +39,30 @@ describe("parseFallbackConfig", () => {
     // loadAstrocodeConfig — a raw fallback.agents input is NOT parsed
     expect(config.agents).toEqual({});
   });
+
+  test("same-model retry budget defaults to 2 retries / 300s wait", () => {
+    const parsed = parseFallbackConfig({});
+    expect(parsed.same_model_max_retries).toBe(2);
+    expect(parsed.same_model_max_wait_seconds).toBe(300);
+  });
+
+  test("same-model retry budget explicit override wins", () => {
+    const parsed = parseFallbackConfig({
+      same_model_max_retries: 5,
+      same_model_max_wait_seconds: 90,
+    });
+    expect(parsed.same_model_max_retries).toBe(5);
+    expect(parsed.same_model_max_wait_seconds).toBe(90);
+  });
+
+  test("same-model retry budget garbage falls back to defaults", () => {
+    const parsed = parseFallbackConfig({
+      same_model_max_retries: -1,
+      same_model_max_wait_seconds: "nope",
+    });
+    expect(parsed.same_model_max_retries).toBe(2);
+    expect(parsed.same_model_max_wait_seconds).toBe(300);
+  });
 });
 
 describe("loadAstrocodeConfig", () => {
@@ -214,6 +238,101 @@ describe("loadAstrocodeConfig walk-up layers", () => {
       expect(config.fallback.max_attempts).toBe(5);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("subagents.inherit_parent_model", () => {
+  function makeLayers(): { root: string; home: string; project: string } {
+    const root = mkdtempSync(join(tmpdir(), "astrocode-subagents-"));
+    const home = join(root, "home");
+    const project = join(home, "project");
+    mkdirSync(project, { recursive: true });
+    return { root, home, project };
+  }
+
+  test("absent subagents key defaults to false", () => {
+    const config = loadAstrocodeConfig([]);
+    expect(config.subagents.inherit_parent_model).toBe(false);
+  });
+
+  test("explicit true from file is honored", () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-sub-true-"));
+    try {
+      writeFileSync(
+        join(dir, "astrocode.json"),
+        JSON.stringify({ subagents: { inherit_parent_model: true } }),
+      );
+      const config = loadAstrocodeConfig([dir]);
+      expect(config.subagents.inherit_parent_model).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("non-true values parse to false", () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-sub-garbage-"));
+    try {
+      writeFileSync(
+        join(dir, "astrocode.json"),
+        JSON.stringify({ subagents: { inherit_parent_model: "true" } }),
+      );
+      const config = loadAstrocodeConfig([dir]);
+      expect(config.subagents.inherit_parent_model).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("merge layers: nearest layer wins per field", () => {
+    const { root, home, project } = makeLayers();
+    try {
+      writeFileSync(
+        join(home, "astrocode.json"),
+        JSON.stringify({ subagents: { inherit_parent_model: true } }),
+      );
+      writeFileSync(
+        join(project, "astrocode.json"),
+        JSON.stringify({ subagents: { inherit_parent_model: false } }),
+      );
+      expect(loadAstrocodeConfig([project]).subagents.inherit_parent_model).toBe(
+        false,
+      );
+
+      writeFileSync(
+        join(home, "astrocode.json"),
+        JSON.stringify({ subagents: { inherit_parent_model: false } }),
+      );
+      writeFileSync(
+        join(project, "astrocode.json"),
+        JSON.stringify({ subagents: { inherit_parent_model: true } }),
+      );
+      expect(loadAstrocodeConfig([project]).subagents.inherit_parent_model).toBe(
+        true,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("inline options override file values", () => {
+    const dir = mkdtempSync(join(tmpdir(), "astrocode-sub-inline-"));
+    try {
+      writeFileSync(
+        join(dir, "astrocode.json"),
+        JSON.stringify({ subagents: { inherit_parent_model: true } }),
+      );
+      const overridden = loadAstrocodeConfig([dir], {
+        subagents: { inherit_parent_model: false },
+      });
+      expect(overridden.subagents.inherit_parent_model).toBe(false);
+
+      const elevated = loadAstrocodeConfig([], {
+        subagents: { inherit_parent_model: true },
+      });
+      expect(elevated.subagents.inherit_parent_model).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
