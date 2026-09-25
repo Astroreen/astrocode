@@ -15,6 +15,7 @@
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { TextPartInput } from "@opencode-ai/sdk";
 import { getAgentConfigKey } from "../agents/personas";
+import { parseModelString } from "../models/model-id";
 import { areModelsEquivalent } from "./canonicalize";
 import { classifyError, getErrorMessage, isRetryableError } from "./classify";
 import type { ErrorClass } from "./classify";
@@ -47,17 +48,9 @@ const inFlight = new Set<string>();
 // the note when replaying a synthetic-only user turn (see collectLastUserText).
 const FALLBACK_NOTE_PREFIX = "[astrocode fallback]";
 
-export function parseModelString(
-  value: string,
-): { providerID: string; modelID: string } | undefined {
-  const trimmed = value.trim();
-  const slash = trimmed.indexOf("/");
-  if (slash <= 0 || slash === trimmed.length - 1) return undefined;
-  return {
-    providerID: trimmed.slice(0, slash),
-    modelID: trimmed.slice(slash + 1),
-  };
-}
+// Re-exported for existing importers (src/index.ts, test/fallback.test.ts).
+// The single implementation lives in src/models/model-id.ts.
+export { parseModelString };
 
 // Per-agent list fully replaces the global list (decision #3: no merge).
 // Accepts either the display name ("Sisyphus - ultraworker") or the canonical

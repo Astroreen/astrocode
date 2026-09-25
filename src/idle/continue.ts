@@ -12,6 +12,7 @@
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { TextPartInput } from "@opencode-ai/sdk";
 import { getLastFallbackModel } from "../fallback/state";
+import { parseModelString } from "../models/model-id";
 import {
   ABORT_WINDOW_MS,
   CONTINUATION_COOLDOWN_MS,
@@ -162,16 +163,7 @@ export async function maybeContinueIdle(
 
     // Continue on the fallback model if one was already used this session.
     const fallbackModel = getLastFallbackModel(sessionID);
-    let parsedModel: { providerID: string; modelID: string } | undefined;
-    if (fallbackModel) {
-      const slash = fallbackModel.indexOf("/");
-      if (slash > 0 && slash < fallbackModel.length - 1) {
-        parsedModel = {
-          providerID: fallbackModel.slice(0, slash),
-          modelID: fallbackModel.slice(slash + 1),
-        };
-      }
-    }
+    const parsedModel = parseModelString(fallbackModel);
 
     const body = parsedModel
       ? { model: parsedModel, parts: [note] }
