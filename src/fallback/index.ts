@@ -34,7 +34,6 @@ import {
   recordAttempt,
   resetFailures,
   resetSameModelAttempts,
-  shouldThrottleRotation,
 } from "./state";
 import { setSessionFallbackModel } from "./session-model";
 import { getChildSessionAgent, isChildSession } from "./subagent";
@@ -124,11 +123,6 @@ export function decideFallback(
   const errorClass = classifyError(error, config.retry_on_errors);
   if (!isRetryableError(error, config.retry_on_errors)) {
     return { retry: false, reason: "not-retryable", errorClass };
-  }
-  // Rotations are attempt-capped only: a cooldown here self-throttles the
-  // second consecutive hop exactly when rotation is needed most.
-  if (shouldThrottleRotation(sessionID, config.max_attempts)) {
-    return { retry: false, reason: "throttled", errorClass };
   }
 
   const candidates = resolveFallbackModels(config, agent);
@@ -300,9 +294,6 @@ export async function dispatchFallback(
         reason: "not-retryable",
         detail: getErrorMessage(error).slice(0, 200),
       };
-    }
-    if (shouldThrottleRotation(sessionID, config.max_attempts)) {
-      return { retry: false, reason: "throttled" };
     }
 
     const last = await collectLastUserText(client, sessionID);

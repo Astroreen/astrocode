@@ -62,15 +62,6 @@ export function effectiveCooldownSeconds(baseCooldownSeconds: number, failures: 
   return baseCooldownSeconds * 2 ** Math.min(failures, 5);
 }
 
-// True when the session has exhausted max_attempts. Cooldown is NEVER consulted
-// here: rotations must survive a second consecutive failure (the dead-account
-// hop) instead of being self-throttled right when they are needed most.
-export function shouldThrottleRotation(sessionID: string, maxAttempts: number): boolean {
-  const state = states.get(sessionID);
-  if (!state) return false;
-  return state.attempts >= maxAttempts;
-}
-
 // True when the cooldown between same-model attempts has not yet elapsed
 // (exponential per consecutive failure).
 export function shouldThrottleSameModel(

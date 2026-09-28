@@ -19,7 +19,6 @@
 //   "fallback": {
 //     "enabled": true,
 //     "retry_on_errors": [429, 500, 502, 503, 504],
-//     "max_attempts": 3,
 //     "cooldown_seconds": 60,
 //     "models": ["openrouter/~deepseek/deepseek-flash-latest"]  // global chain
 //   }

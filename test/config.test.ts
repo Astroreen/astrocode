@@ -165,20 +165,20 @@ describe("loadAstrocodeConfig walk-up layers", () => {
     return { root, home, project };
   }
 
-  test("nearest layer wins for fallback.max_attempts", () => {
+  test("nearest layer wins for fallback.cooldown_seconds", () => {
     const { root, home, project } = makeLayers();
     try {
       writeFileSync(
         join(home, "astrocode.json"),
-        JSON.stringify({ fallback: { max_attempts: 5 } }),
+        JSON.stringify({ fallback: { cooldown_seconds: 5 } }),
       );
       writeFileSync(
         join(project, "astrocode.json"),
-        JSON.stringify({ fallback: { max_attempts: 2 } }),
+        JSON.stringify({ fallback: { cooldown_seconds: 2 } }),
       );
 
       const config = loadAstrocodeConfig([project]);
-      expect(config.fallback.max_attempts).toBe(2);
+      expect(config.fallback.cooldown_seconds).toBe(2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -230,12 +230,12 @@ describe("loadAstrocodeConfig walk-up layers", () => {
     try {
       writeFileSync(
         join(home, "astrocode.json"),
-        JSON.stringify({ fallback: { max_attempts: 5 } }),
+        JSON.stringify({ fallback: { cooldown_seconds: 5 } }),
       );
       writeFileSync(join(project, "astrocode.json"), "{ not valid json ");
 
       const config = loadAstrocodeConfig([project]);
-      expect(config.fallback.max_attempts).toBe(5);
+      expect(config.fallback.cooldown_seconds).toBe(5);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

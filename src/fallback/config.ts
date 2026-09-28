@@ -6,7 +6,7 @@
 //
 // Shape:
 //   { fallback: {
-//       enabled, retry_on_errors: number[], max_attempts, cooldown_seconds,
+//       enabled, retry_on_errors: number[], cooldown_seconds,
 //       same_model_max_retries, same_model_max_wait_seconds,
 //       models: string[] (global chain) } }
 //
@@ -22,7 +22,6 @@ export interface FallbackAgentOverride {
 export interface FallbackConfig {
   enabled: boolean;
   retry_on_errors: number[];
-  max_attempts: number;
   cooldown_seconds: number;
   /** Transient errors: same-model retry budget before rotating. */
   same_model_max_retries: number;
@@ -37,7 +36,6 @@ export interface FallbackConfig {
 export const DEFAULT_FALLBACK_CONFIG: FallbackConfig = {
   enabled: false,
   retry_on_errors: [429, 500, 502, 503, 504],
-  max_attempts: 3,
   cooldown_seconds: 60,
   same_model_max_retries: 2,
   same_model_max_wait_seconds: 300,
@@ -87,8 +85,6 @@ export function parseFallbackConfig(raw: unknown): FallbackConfig {
         : DEFAULT_FALLBACK_CONFIG.enabled,
     retry_on_errors:
       asNumberArray(input.retry_on_errors) ?? DEFAULT_FALLBACK_CONFIG.retry_on_errors,
-    max_attempts:
-      asNonNegativeInt(input.max_attempts) ?? DEFAULT_FALLBACK_CONFIG.max_attempts,
     cooldown_seconds:
       asNonNegativeInt(input.cooldown_seconds) ??
       DEFAULT_FALLBACK_CONFIG.cooldown_seconds,

@@ -384,7 +384,6 @@ const astrocodePlugin: Plugin = async (input, options) => {
             log.toast({ variant: "info", title: "astrocode fallback", message: text });
           } else if (
             decision.detail === "child-aborted" ||
-            decision.reason === "throttled" ||
             decision.reason === "resubmit-failed"
           )
             log.warn(text);

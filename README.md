@@ -126,7 +126,6 @@ astrocode-specific in `opencode.jsonc`:
   "fallback": {
     "enabled": true,
     "retry_on_errors": [429, 500, 502, 503, 504],
-    "max_attempts": 3,
     "cooldown_seconds": 60,
     // Global chain, used by every agent without its own fallback_models.
     "models": ["openrouter/~deepseek/deepseek-flash-latest"]
@@ -195,7 +194,8 @@ evidence (name + message + `responseBody`) in a fixed 7-step order and returns `
 `terminal_quota` → rotate immediately, provider-aware (different provider first). Transient
 `non_terminal` → up to `same_model_max_retries` (default 2) same-model retries while the wait is
 ≤ `same_model_max_wait_seconds` (default 300s), otherwise rotate immediately.
-Rotations are never cooldown-throttled; `max_attempts` (default 3) caps rotations per session.
+Rotations are never cooldown-throttled and never attempt-capped: the chain is walked until it
+is exhausted (`chain-exhausted`).
 `context_overflow` and `not_retryable` never fall back.
 
 **Canonicalization** (`src/fallback/canonicalize.ts`): `canonicalizeModelID` strips

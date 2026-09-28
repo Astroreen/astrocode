@@ -17,7 +17,6 @@ import {
   getSameModelAttempts,
   incrementSameModelAttempts,
   resetSameModelAttempts,
-  shouldThrottleRotation,
   shouldThrottleSameModel,
   effectiveCooldownSeconds,
 } from "../src/fallback/state";
@@ -50,13 +49,11 @@ describe("parseFallbackConfig", () => {
     const parsed = parseFallbackConfig({
       enabled: true,
       retry_on_errors: [429],
-      max_attempts: 5,
       cooldown_seconds: 10,
       models: ["a/b"],
     });
     expect(parsed.enabled).toBe(true);
     expect(parsed.retry_on_errors).toEqual([429]);
-    expect(parsed.max_attempts).toBe(5);
     expect(parsed.cooldown_seconds).toBe(10);
     expect(parsed.models).toEqual(["a/b"]);
     expect(parsed.agents).toEqual({});
@@ -65,11 +62,9 @@ describe("parseFallbackConfig", () => {
   test("garbage fields fall back to defaults", () => {
     const parsed = parseFallbackConfig({
       retry_on_errors: "nope",
-      max_attempts: -3,
       models: [1, 2, "ok"],
     });
     expect(parsed.retry_on_errors).toEqual(DEFAULT_FALLBACK_CONFIG.retry_on_errors);
-    expect(parsed.max_attempts).toBe(DEFAULT_FALLBACK_CONFIG.max_attempts);
     expect(parsed.models).toEqual(["ok"]);
   });
 });
@@ -212,24 +207,6 @@ describe("effectiveCooldownSeconds", () => {
 describe("fallback state (T8)", () => {
   beforeEach(() => clearAll());
 
-  test("shouldThrottleRotation never fires below maxAttempts, regardless of elapsed time", () => {
-    const t0 = 1_000_000;
-    recordAttempt("s1", "a/one", t0);
-    expect(shouldThrottleRotation("s1", 5)).toBe(false);
-    // cooldown window is irrelevant: even deep inside it rotation is free
-    expect(shouldThrottleSameModel("s1", 60, t0 + 1_000)).toBe(true);
-    expect(shouldThrottleRotation("s1", 5)).toBe(false);
-    // ...and after hours have passed
-    expect(shouldThrottleRotation("s1", 5)).toBe(false);
-    expect(shouldThrottleRotation("missing", 0)).toBe(false);
-    // exhaustion is the only trigger
-    recordAttempt("s1", "a/one", t0 + 2_000);
-    recordAttempt("s1", "a/one", t0 + 3_000);
-    recordAttempt("s1", "a/one", t0 + 4_000);
-    recordAttempt("s1", "a/one", t0 + 5_000);
-    expect(shouldThrottleRotation("s1", 5)).toBe(true);
-  });
-
   test("shouldThrottleSameModel follows effectiveCooldownSeconds with injected now", () => {
     const t0 = 1_000_000;
     recordAttempt("s1", "a/one", t0);
@@ -323,17 +300,10 @@ describe("decideFallback", () => {
     expect(decision.model).toBe("b/two");
   });
 
-  test("throttled after max_attempts", () => {
-    const config = configWith({ max_attempts: 1, cooldown_seconds: 0 });
-    recordAttempt("s1", "openai/gpt-4o");
-    expect(decideFallback(config, "s1", { message: "overloaded" }).reason).toBe("throttled");
-  });
-
   test("same-model cooldown never throttles a decision", () => {
-    const config = configWith({ max_attempts: 5, cooldown_seconds: 60 });
+    const config = configWith({ cooldown_seconds: 60 });
     recordAttempt("s1", "openai/gpt-4o");
     expect(shouldThrottleSameModel("s1", 60)).toBe(true);
-    expect(shouldThrottleRotation("s1", 5)).toBe(false);
     const decision = decideFallback(config, "s1", { message: "overloaded" });
     expect(decision.reason).toBe("same-model-retry");
     expect(decision.detail).toBe("wait=unknown");
@@ -342,7 +312,6 @@ describe("decideFallback", () => {
   test("rotates through the chain by attempt count", () => {
     const config = configWith({
       models: ["a/one", "b/two"],
-      max_attempts: 5,
       cooldown_seconds: 0,
       same_model_max_retries: 1,
     });
@@ -363,7 +332,6 @@ describe("decideFallback", () => {
   test("non-terminal error after 1 attempt rotates the chain", () => {
     const config = configWith({
       models: ["a/one", "b/two"],
-      max_attempts: 5,
       cooldown_seconds: 0,
       same_model_max_retries: 1,
     });
@@ -378,7 +346,6 @@ describe("decideFallback", () => {
   test("transient retry-after=30s retries same model up to the budget, then rotates", () => {
     const config = configWith({
       models: ["a/one", "b/two"],
-      max_attempts: 5,
       same_model_max_retries: 2,
     });
     const error = {
@@ -456,7 +423,6 @@ describe("decideFallback", () => {
     });
     recordAttempt("s1", "anthropic/claude-opus-5-5");
     expect(shouldThrottleSameModel("s1", 60)).toBe(true);
-    expect(shouldThrottleRotation("s1", 3)).toBe(false);
 
     const decision = decideFallback(
       config,
@@ -507,7 +473,7 @@ describe("decideFallback — snap-back resume", () => {
   const quota = { message: "You've hit your session limit · resets 6pm" };
 
   function config() {
-    return configWith({ models: CHAIN, max_attempts: 20 });
+    return configWith({ models: CHAIN });
   }
 
   function threeRotations() {
