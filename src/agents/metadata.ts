@@ -177,6 +177,20 @@ export const AGENT_METADATA: Record<string, AgentMetadata> = {
       },
     ],
   },
+  scribe: {
+    name: "Scribe - Document Writer",
+    role: "Document writer - docx/doc/pdf with example analysis and Lithuanian format defaults",
+    cost: "CHEAP",
+    keyTrigger:
+      "User wants a document written (essay, report, letter, docx/doc/pdf) → delegate to `scribe`",
+    triggers: [
+      {
+        domain: "Document writing",
+        trigger:
+          "User wants a docx/doc/pdf document created or formatted (essay, report, cover letter, official letter)",
+      },
+    ],
+  },
 };
 
 /**

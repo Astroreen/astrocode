@@ -163,7 +163,8 @@ describe("discoverSkills", () => {
     expect(names).toContain("commit-message");
     expect(names).toContain("code-review");
     expect(names).toContain("verify-before-done");
-    expect(bundled.length).toBe(3);
+    expect(names).toContain("docx");
+    expect(bundled.length).toBe(4);
     for (const skill of bundled) {
       expect(skill.priority).toBe(5);
     }

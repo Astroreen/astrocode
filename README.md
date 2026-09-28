@@ -35,7 +35,7 @@ Implemented and verified (`bun test`: 415 tests pass, `tsc --noEmit`: 0 errors):
   `mergeConfigLayers` (nearest wins, arrays full-replace)
 - guards + dump side-channel (`src/prompts/*.ts`)
 - dynamic Sisyphus prompt engine (`src/prompts/sisyphus/**`, `src/agents/metadata.ts`)
-- agent personas (`agents/*.md`, 11 shipped + `plan`/`build` overrides)
+- agent personas (`agents/*.md`, 12 shipped + `plan`/`build` overrides)
 - runtime model fallback (`src/fallback/**`)
 - 7 builtin commands (`src/commands/index.ts`)
 
@@ -242,7 +242,7 @@ correct, since switching models won't fix a bad key.
   `~/.config/opencode`/`~/.claude`/`~/.agents` skills 30/20/10, bundled builtin skills 5.
   `discoverSkillsWithPriority` keeps the highest-priority definition per skill name and logs a
   collision when a lower-priority copy is dropped.
-- **Bundled builtin skills** (`skills/builtin/{commit-message,code-review,verify-before-done}/SKILL.md`):
+- **Bundled builtin skills** (`skills/builtin/{commit-message,code-review,verify-before-done,docx}/SKILL.md`):
   always discoverable at the lowest priority tier, so a project/user skill of the same name wins.
 - **Skills as slash commands** (`src/skills/extra.ts`): opencode registers skills for the model's
   `skill` tool but does *not* expose them as commands, so `/caveman` etc. appear "missing" in the
@@ -295,6 +295,7 @@ switcher), and `default_agent` is set to Sisyphus:
 | `explore` | `explore` | `#2ECC71` |
 | `librarian` | `librarian` | `#1ABC9C` |
 | `multimodal-looker` | `multimodal-looker` | `#E91E63` |
+| `scribe` | `scribe` | `#A29BFE` |
 
 opencode's builtin primary agents are replaced/demoted, exactly like oh-my-openagent:
 

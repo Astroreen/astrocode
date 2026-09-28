@@ -61,6 +61,7 @@ describe("loadPersonas", () => {
       "metis",
       "momus",
       "multimodal-looker",
+      "scribe",
     ]) {
       expect(personas[name]?.prompt.length ?? 0).toBeGreaterThan(0);
     }

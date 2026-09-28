@@ -41,6 +41,7 @@ export const DEFAULT_COLORS: Record<string, string> = {
   metis: "#F1C40F",
   momus: "#E67E22",
   "multimodal-looker": "#E91E63",
+  scribe: "#A29BFE",
 };
 
 // Display names, copied from oh-my-openagent's own AGENT_DISPLAY_NAMES map
@@ -59,6 +60,7 @@ export const AGENT_DISPLAY_NAMES: Record<string, string> = {
   librarian: "librarian",
   explore: "explore",
   "multimodal-looker": "multimodal-looker",
+  scribe: "Scribe - Document Writer",
 };
 
 export function getAgentDisplayName(key: string): string {
