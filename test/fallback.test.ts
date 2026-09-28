@@ -495,6 +495,78 @@ describe("decideFallback", () => {
   });
 });
 
+describe("decideFallback — snap-back resume", () => {
+  beforeEach(() => clearAll());
+
+  const CHAIN = [
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-4-5",
+    "openrouter/xiaomi/mimo-v2.6-pro",
+    "openrouter/z-ai/glm-5.3-flash",
+  ];
+  const quota = { message: "You've hit your session limit · resets 6pm" };
+
+  function config() {
+    return configWith({ models: CHAIN, max_attempts: 20 });
+  }
+
+  function threeRotations() {
+    recordAttempt("s1", "anthropic/claude-sonnet-5");
+    recordAttempt("s1", "anthropic/claude-haiku-4-5");
+    recordAttempt("s1", "openrouter/xiaomi/mimo-v2.6-pro");
+  }
+
+  test("resumes the last working fallback when the primary failed again", () => {
+    threeRotations();
+
+    // The client snapped back to the primary (opus) and it failed. Without the
+    // authoritative failed model the rotation (offset=3) lands on glm; with it
+    // we resume mimo, the model that was actually working.
+    const decision = decideFallback(
+      config(),
+      "s1",
+      quota,
+      undefined,
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-opus-5-5",
+    );
+    expect(decision.retry).toBe(true);
+    expect(decision.reason).toBe("retry");
+    expect(decision.model).toBe("openrouter/xiaomi/mimo-v2.6-pro");
+  });
+
+  test("advances when the last fallback itself failed (no loop)", () => {
+    threeRotations();
+
+    // Here the failed model IS the last fallback, so resuming would loop; the
+    // chain must advance to the next candidate instead.
+    const decision = decideFallback(
+      config(),
+      "s1",
+      quota,
+      undefined,
+      "openrouter/xiaomi/mimo-v2.6-pro",
+      "openrouter/xiaomi/mimo-v2.6-pro",
+    );
+    expect(decision.retry).toBe(true);
+    expect(decision.model).not.toBe("openrouter/xiaomi/mimo-v2.6-pro");
+  });
+
+  test("keeps the old rotation when the failed model is unknown", () => {
+    threeRotations();
+
+    const decision = decideFallback(
+      config(),
+      "s1",
+      quota,
+      undefined,
+      "anthropic/claude-opus-5-5",
+    );
+    expect(decision.retry).toBe(true);
+    expect(decision.model).toBe("openrouter/z-ai/glm-5.3-flash");
+  });
+});
+
 describe("retry-key dedup", () => {
   beforeEach(() => clearAll());
 

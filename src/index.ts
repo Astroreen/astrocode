@@ -314,17 +314,24 @@ const astrocodePlugin: Plugin = async (input, options) => {
     // retries) as `session.status` with type "retry".
     event: async ({ event }) => {
       try {
-        // Idle continuation is independent of fallback enablement.
-        if (
-          event.type === "session.idle" &&
-          astrocodeConfig.idleContinuation.enabled
-        ) {
+        // A finished turn is the moment we learn a pinned fallback actually
+        // worked. Refresh the pin here so a long turn (fallback models are
+        // slower than the primary) cannot let the window expire mid-turn and
+        // snap the next prompt back onto the still rate-limited primary — which
+        // would make the following failure walk the chain past the model that
+        // was working. A pin only exists while fallback is enabled, and
+        // `touchSessionFallbackModel` no-ops without one.
+        if (event.type === "session.idle") {
           const target = event.properties?.sessionID;
           if (target) {
-            const result = await maybeContinueIdle(input.client, target, {
-              max: astrocodeConfig.idleContinuation.max,
-            });
-            log.info(`idle-continuation: ${result.reason}`);
+            touchSessionFallbackModel(target);
+            // Idle continuation is independent of fallback enablement.
+            if (astrocodeConfig.idleContinuation.enabled) {
+              const result = await maybeContinueIdle(input.client, target, {
+                max: astrocodeConfig.idleContinuation.max,
+              });
+              log.info(`idle-continuation: ${result.reason}`);
+            }
           }
           return;
         }
@@ -403,6 +410,14 @@ const astrocodePlugin: Plugin = async (input, options) => {
           const info = event.properties?.info;
           if (info?.role !== "assistant") return;
           if (!info.error) return;
+          // The assistant message carries the model that actually ran — i.e. the
+          // model that just failed. That is authoritative even when the client's
+          // last user message still names a different (stale) model, which is
+          // exactly the snap-back case decideFallback needs to detect.
+          const failedModel =
+            info.providerID && info.modelID
+              ? `${info.providerID}/${info.modelID}`
+              : undefined;
           logDecision(
             "message.updated",
             await dispatchFallback(
@@ -410,6 +425,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
               fallbackConfig,
               info.sessionID,
               info.error,
+              failedModel,
             ),
           );
           return;

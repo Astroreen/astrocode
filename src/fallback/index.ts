@@ -116,6 +116,7 @@ export function decideFallback(
   error: unknown,
   agent?: string,
   currentModel?: string,
+  failedModel?: string,
 ): FallbackDecision {
   if (!config.enabled) {
     return { retry: false, reason: "disabled" };
@@ -157,6 +158,23 @@ export function decideFallback(
   const offset = attempts % candidates.length;
   const rotated = candidates.slice(offset).concat(candidates.slice(0, offset));
   const lastUsed = getLastFallbackModel(sessionID);
+
+  // Snap-back recovery. The client kept asking for the primary; the pin expired,
+  // the primary ran and failed again. `failedModel` is the failing assistant
+  // message's own model, so it tells us the PRIMARY failed — not the fallback we
+  // were on. Resume that fallback instead of walking past it (which the
+  // attempt-count rotation above would otherwise do, landing on the model after
+  // it). When the last fallback IS what just failed, equivalence holds and the
+  // chain advances normally, so a dead fallback cannot loop.
+  if (failedModel && lastUsed && !areModelsEquivalent(failedModel, lastUsed)) {
+    const resume = candidates.find((candidate) =>
+      areModelsEquivalent(candidate, lastUsed),
+    );
+    if (resume && !areModelsEquivalent(resume, failedModel)) {
+      return { retry: true, reason: "retry", model: resume, errorClass };
+    }
+  }
+
   const model = pickFallbackModel(
     rotated,
     currentModel,
@@ -263,6 +281,7 @@ export async function dispatchFallback(
   config: FallbackConfig,
   sessionID: string,
   error: unknown,
+  failedModel?: string,
 ): Promise<FallbackDecision> {
   if (inFlight.has(sessionID)) {
     return { retry: false, reason: "in-flight" };
@@ -297,6 +316,7 @@ export async function dispatchFallback(
       error,
       last.agent,
       last.model,
+      failedModel,
     );
     if (decision.reason === "same-model-retry") {
       incrementSameModelAttempts(sessionID);

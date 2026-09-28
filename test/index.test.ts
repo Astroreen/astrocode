@@ -6,9 +6,10 @@ import astrocodePlugin from "../src/index";
 import {
   clearAllSessionModels,
   getSessionModelState,
+  isFallbackPinActive,
   setSessionFallbackModel,
 } from "../src/fallback/session-model";
-import { clearAll as clearFallbackState } from "../src/fallback/state";
+import { clearAll as clearFallbackState, recordAttempt } from "../src/fallback/state";
 import {
   maybeContinueIdle,
   resetIdleContinuationState,
@@ -410,6 +411,37 @@ describe("astrocode plugin — chat.message fallback pin", () => {
   });
 });
 
+describe("astrocode plugin — session.idle refreshes the fallback pin", () => {
+  test("keeps a pinned fallback alive across a long turn", async () => {
+    clearAllSessionModels();
+    setSessionFallbackModel(
+      "idle-1",
+      "anthropic/claude-sonnet-4-6",
+      "openrouter/x/y",
+      Date.now() - 120_000,
+    );
+    expect(isFallbackPinActive("idle-1", 60)).toBe(false);
+
+    const hooks = await astrocodePlugin({} as any);
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "idle-1" } },
+    } as any);
+
+    expect(isFallbackPinActive("idle-1", 60)).toBe(true);
+  });
+
+  test("does not pin a session that never fell back", async () => {
+    clearAllSessionModels();
+    const hooks = await astrocodePlugin({} as any);
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "idle-none" } },
+    } as any);
+
+    expect(getSessionModelState("idle-none")).toBeUndefined();
+  });
+});
+
 describe("astrocode plugin — skill slash commands (oh-my parity)", () => {
   test("config injects skill command with full body + <user-request>", async () => {
     const dir = mkdtempSync(join(tmpdir(), "astrocode-skillcmd-"));
@@ -706,5 +738,44 @@ describe("astrocode plugin — RetryPart and status.next surfaces", () => {
       modelID: "one/a",
     });
     expect(getSessionModelState("st-1")?.currentModel).toBe("openrouter/one/a");
+  });
+
+  test("message.updated resumes the working fallback after a snap-back", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    // The session already fell back to chain model #2 and is pinned there.
+    setSessionFallbackModel("mu-1", "anthropic/claude-sonnet-4-6", "openrouter/one/a");
+    recordAttempt("mu-1", "openrouter/one/a");
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+
+    await hooks.event!({
+      event: {
+        type: "message.updated",
+        properties: {
+          info: {
+            role: "assistant",
+            sessionID: "mu-1",
+            providerID: "anthropic",
+            modelID: "claude-sonnet-4-6",
+            error: {
+              name: "APIError",
+              data: {
+                message: "usage limit reached",
+                isRetryable: false,
+                responseBody:
+                  '{"error":{"type":"FreeUsageLimitError","message":"free usage limit"}}',
+              },
+            },
+          },
+        },
+      },
+    } as any);
+
+    // The failed model is the primary (sonnet-4-6), not the pinned fallback, so
+    // the chain resumes on #2 instead of advancing to #3.
+    expect(calls.promptAsync).toBe(1);
+    expect(calls.lastBody?.model).toEqual({
+      providerID: "openrouter",
+      modelID: "one/a",
+    });
   });
 });
