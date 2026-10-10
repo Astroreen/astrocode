@@ -166,7 +166,11 @@ describe("discoverSkills", () => {
     expect(names).toContain("docx");
     expect(names).toContain("frontend-design");
     expect(names).toContain("design-taste-frontend");
-    expect(bundled.length).toBe(6);
+    expect(names).toContain("systematic-debugging");
+    expect(names).toContain("test-driven-development");
+    expect(names).toContain("spike");
+    expect(names).toContain("subagent-driven-development");
+    expect(bundled.length).toBe(10);
     for (const skill of bundled) {
       expect(skill.priority).toBe(5);
     }
