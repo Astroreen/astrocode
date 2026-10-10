@@ -164,7 +164,9 @@ describe("discoverSkills", () => {
     expect(names).toContain("code-review");
     expect(names).toContain("verify-before-done");
     expect(names).toContain("docx");
-    expect(bundled.length).toBe(4);
+    expect(names).toContain("frontend-design");
+    expect(names).toContain("design-taste-frontend");
+    expect(bundled.length).toBe(6);
     for (const skill of bundled) {
       expect(skill.priority).toBe(5);
     }
