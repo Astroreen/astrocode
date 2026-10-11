@@ -154,17 +154,19 @@ export const ALIAS_REGISTRY: readonly AliasDefinition[] = [
     description: delegateDescription(),
   },
   // Claude Code delegation names -> opencode native tools.
+  //
+  // NO `Skill` alias: a Claude-path proxy (opencode-claude-auth via meridian)
+  // normalizes tool names by capitalizing the first letter, so opencode's
+  // native `skill` tool and an alias named `Skill` both become `mcp_Skill` —
+  // the API rejects the duplicate with `Tool mcp_Skill is already registered`
+  // (HTTP 500). The native `skill` tool already covers the call, so no alias
+  // is needed. `TodoWrite` is safe: it normalizes to `mcp_TodoWrite`, which
+  // does NOT collide with `todowrite` -> `mcp_Todowrite`.
   {
     name: "Agent",
     canonical: "task",
     kind: "redirect",
     description: redirectDescription("task"),
-  },
-  {
-    name: "Skill",
-    canonical: "skill",
-    kind: "redirect",
-    description: redirectDescription("skill"),
   },
   // Plan-mode toggles -> the planner subagent (astrocode convention, see
   // src/commands/index.ts header).

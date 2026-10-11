@@ -129,7 +129,6 @@ const EXPECTED_COMPOSITION: [string, string, AliasKind][] = [
   ["TaskOutput", "child-output", "delegate"],
   ["TaskStop", "child-abort", "delegate"],
   ["Agent", "task", "redirect"],
-  ["Skill", "skill", "redirect"],
   ["EnterPlanMode", "task", "redirect"],
   ["ExitPlanMode", "task", "redirect"],
 ];
@@ -172,6 +171,36 @@ describe("ALIAS_REGISTRY composition (T5)", () => {
       } else {
         expect(def.hint).toBeUndefined();
       }
+    }
+  });
+
+  // Regression (Claude path, 2026-10-11): the Claude-path proxy normalizes
+  // tool names by capitalizing the first letter, so an alias whose capitalized
+  // name equals a builtin's capitalized name is sent twice (`Tool mcp_X is
+  // already registered` -> HTTP 500). The removed `Skill` alias collided with
+  // the native `skill` tool this way. Assert the rule holds for every entry.
+  test("no alias name collides with a builtin after first-letter capitalization", () => {
+    const BUILTIN_TOOLS = [
+      "invalid",
+      "question",
+      "bash",
+      "read",
+      "glob",
+      "grep",
+      "edit",
+      "write",
+      "task",
+      "webfetch",
+      "todowrite",
+      "websearch",
+      "skill",
+      "apply_patch",
+    ];
+    const capitalize = (value: string) =>
+      value.charAt(0).toUpperCase() + value.slice(1);
+    const normalizedBuiltins = new Set(BUILTIN_TOOLS.map(capitalize));
+    for (const def of ALIAS_REGISTRY) {
+      expect(normalizedBuiltins.has(capitalize(def.name))).toBe(false);
     }
   });
 });
