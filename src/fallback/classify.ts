@@ -392,10 +392,15 @@ export function classifyError(error: unknown, retryOnErrors: number[]): ErrorCla
   if (ZAI_TERMINAL_CODE_PATTERN.test(evidence)) return "terminal_quota";
 
   const status = getStatusCode(error);
-  if (
-    (status === 429 || status === 402) &&
-    getRetryAfterSeconds(error) === undefined
-  ) {
+  // A 402 is "payment required": opencode never retries it, so the non_terminal
+  // path's same-model-retry deferral deadlocks — no second error event ever
+  // arrives and the fallback chain never rotates (live: OpenRouter
+  // "in_flight_budget_exhausted" 402 with a Retry-After header stopped the
+  // session). Rotate immediately instead. 429 keeps the retry-after escape: a
+  // rate limit with a retry-after is genuinely transient and opencode does
+  // retry it.
+  if (status === 402) return "terminal_quota";
+  if (status === 429 && getRetryAfterSeconds(error) === undefined) {
     return "terminal_quota";
   }
 

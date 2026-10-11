@@ -394,6 +394,31 @@ describe("decideFallback", () => {
     expect(decision.model).toBe("b/two");
   });
 
+  test("402 with retry-after rotates immediately (opencode never retries 402)", () => {
+    // Live OpenRouter "in_flight_budget_exhausted" shape: 402 + Retry-After.
+    // The retry-after must NOT push this into the non_terminal same-model-retry
+    // deferral — opencode never retries a 402, so the chain would never rotate.
+    const config = configWith({ models: ["a/one", "b/two"] });
+    const error = {
+      name: "APIError",
+      data: {
+        message:
+          "This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits.",
+        statusCode: 402,
+        isRetryable: false,
+        responseHeaders: { "retry-after": "120" },
+        responseBody:
+          '{"error":{"code":402,"metadata":{"reason":"in_flight_budget_exhausted"}}}',
+      },
+    };
+
+    const decision = decideFallback(config, "s1", error, undefined, "a/one");
+    expect(decision.errorClass).toBe("terminal_quota");
+    expect(decision.retry).toBe(true);
+    expect(decision.reason).toBe("retry");
+    expect(decision.model).toBe("b/two");
+  });
+
   test("terminal quota with wait=28800s rotates immediately on the first failure", () => {
     const config = configWith({ models: ["a/one", "b/two", "c/three"] });
     const error = {

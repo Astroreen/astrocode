@@ -277,6 +277,44 @@ describe("T2 acceptance", () => {
     );
   });
 
+  test("402 with retry-after → terminal_quota (opencode never retries 402)", () => {
+    // Live OpenRouter "in_flight_budget_exhausted" shape. The retry-after header
+    // must not demote a 402 to non_terminal: opencode never retries a 402, so
+    // the same-model-retry deferral would deadlock the fallback chain.
+    expect(
+      classifyError(
+        {
+          name: "APIError",
+          data: {
+            message:
+              "This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits.",
+            statusCode: 402,
+            isRetryable: false,
+            responseHeaders: { "retry-after": "120" },
+            responseBody:
+              '{"error":{"code":402,"metadata":{"reason":"in_flight_budget_exhausted"}}}',
+          },
+        },
+        CODES,
+      ),
+    ).toBe("terminal_quota");
+  });
+
+  test("429 with retry-after stays non_terminal (transient rate limit)", () => {
+    expect(
+      classifyError(
+        {
+          data: {
+            message: "rate limit exceeded",
+            statusCode: 429,
+            responseHeaders: { "retry-after": "5" },
+          },
+        },
+        CODES,
+      ),
+    ).toBe("non_terminal");
+  });
+
   test("529 overloaded with retry-after → non_terminal", () => {
     expect(
       classifyError(
