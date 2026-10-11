@@ -264,7 +264,7 @@ correct, since switching models won't fix a bad key.
   `~/.config/opencode`/`~/.claude`/`~/.agents` skills 30/20/10, bundled builtin skills 5.
   `discoverSkillsWithPriority` keeps the highest-priority definition per skill name and logs a
   collision when a lower-priority copy is dropped.
-- **Bundled builtin skills** (`skills/builtin/{commit-message,code-review,verify-before-done,docx}/SKILL.md`):
+- **Bundled builtin skills** (`skills/builtin/{commit-message,code-review,verify-before-done,docx,frontend-design,design-taste-frontend,systematic-debugging,test-driven-development,spike,subagent-driven-development}/SKILL.md`):
   always discoverable at the lowest priority tier, so a project/user skill of the same name wins.
 - **Skills as slash commands** (`src/skills/extra.ts`): opencode registers skills for the model's
   `skill` tool but does *not* expose them as commands, so `/caveman` etc. appear "missing" in the
