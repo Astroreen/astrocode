@@ -107,6 +107,7 @@ import {
 import { COMPACTING_PROMPT } from "./compaction/prompt";
 import {
   consumePendingContinuation,
+  getCompactionState,
   lastUsage,
   resetCompactionState,
   setForceCompact,
@@ -439,6 +440,16 @@ const astrocodePlugin: Plugin = async (input, options) => {
           const target = event.properties?.sessionID;
           if (target) {
             touchSessionFallbackModel(target);
+            // The turn-boundary compaction runs in the message.updated handler
+            // and may still be in flight when session.idle fires; wait (bounded)
+            // for it so its pending-continuation flag is visible below.
+            for (
+              let i = 0;
+              i < 60 && getCompactionState(target)?.in_flight;
+              i += 1
+            ) {
+              await new Promise((resolve) => setTimeout(resolve, 250));
+            }
             // Compaction trigger on session.idle (plan T9.2): evaluated
             // against the last usage snapshot remembered at the turn
             // boundary. Runs before idle continuation so a compaction that
