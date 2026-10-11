@@ -451,4 +451,21 @@
         "openrouter/openai/gpt-6-luna": { "level": "low" },
         "openrouter/z-ai/glm-5.3-flash": { "level": "off" },
     },
+
+    // ── Compaction engine (plan T9–T12) ─────────────────────────────────────
+    // Rule-triggered, cache-epoch-based context compaction. DCP is removed
+    // (owner decision 2026-10-10) — this engine is the only context mutator.
+    // Triggers at `trigger_ratio` of the effective context window on a turn
+    // boundary or session.idle; the summary is produced by a separate cheap
+    // model (native summarize route, scratch-session fallback) and frozen
+    // once per region (hash-guarded). Manual trigger: /compact.
+    "compaction": {
+        "enabled": true,
+        "summarizer_model": "openrouter/xiaomi/mimo-v2.6-pro",
+        "trigger_ratio": 0.75,
+        "context_window": 200000,
+        "context_windows": {},
+        "prune_stub_chars": 200,
+        "cooldown_seconds": 300,
+    },
 }
