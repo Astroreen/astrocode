@@ -23,6 +23,7 @@ export interface BuiltinCommandDefinition {
 }
 
 import { getAgentDisplayName } from "../agents/personas";
+import { FORCE_COMPACT_MARKER } from "../compaction/force";
 
 const PROMETHEUS = getAgentDisplayName("prometheus");
 const HEPHAESTUS = getAgentDisplayName("hephaestus");
@@ -308,6 +309,12 @@ You are starting an Atlas work session.
 
 Locate the plan, register the goal + todos, then begin executing task by task.`;
 
+/*
+ * astrocode: the original shipped a Codex-harness compatibility table translating
+ * call_omo_agent/task/background_output/team_* into Codex multi_agent_v1.* tools. astrocode
+ * targets opencode only, so that table is not needed. If a Codex target is ever added,
+ * restore it here.
+ */
 export const REFACTOR_TEMPLATE = `${HEADER}
 # Intelligent Refactor Command
 
@@ -343,12 +350,6 @@ Performs intelligent, deterministic refactoring with full codebase awareness:
 4. Plans meticulously (Prometheus)
 5. Executes precisely with LSP and AST-grep
 6. Verifies constantly
-
-<!-- astrocode: the original shipped a Codex-harness compatibility table translating
-     call_omo_agent/task/background_output/team_* into Codex multi_agent_v1.* tools. astrocode
-     targets opencode only, so that table is not needed. If a Codex target is ever added,
-     restore it here.
--->
 
 ---
 
@@ -621,6 +622,17 @@ Always preview first, review, then execute.
 $ARGUMENTS
 </user-request>`;
 
+/*
+ * astrocode: the original shipped a Codex-harness tool-compatibility table (call_omo_agent /
+ * task / background_output / team_* -> Codex multi_agent_v1.*). astrocode targets opencode
+ * only; restore that table here if a Codex target is ever added.
+ *
+ * astrocode: the original also shipped a team-mode addendum (slop-squad team with category
+ * members, team_create/team_task_create/team_send_message/team_shutdown_request, and an
+ * external reviewer task). astrocode has no team_* tools, so that addendum is not applied.
+ * The non-team review loop above is the supported path. To restore team mode, re-add the
+ * addendum and a teamModeEnabled config gate.
+ */
 export const REMOVE_AI_SLOPS_TEMPLATE = `${HEADER}
 # Remove AI Slops Command
 
@@ -628,11 +640,6 @@ export const REMOVE_AI_SLOPS_TEMPLATE = `${HEADER}
 Analyzes all files changed in the current branch (compared to the parent), removes AI-generated
 code smells, then critically reviews the changes to ensure safety and behavior preservation.
 Fixes any issues found during review.
-
-<!-- astrocode: the original shipped a Codex-harness tool-compatibility table (call_omo_agent /
-     task / background_output / team_* -> Codex multi_agent_v1.*). astrocode targets opencode
-     only; restore that table here if a Codex target is ever added.
--->
 
 ## Step 0: Task Planning
 
@@ -734,34 +741,28 @@ If issues are found:
 - ALWAYS verify changes compile/parse correctly
 - ALWAYS preserve test coverage
 - If uncertain, err on the side of keeping the original code
+`;
 
-<!-- astrocode: the original also shipped a team-mode addendum (slop-squad team with category
-     members, team_create/team_task_create/team_send_message/team_shutdown_request, and an
-     external reviewer task). astrocode has no team_* tools, so that addendum is not applied.
-     The non-team review loop above is the supported path. To restore team mode, re-add the
-     addendum and a teamModeEnabled config gate.
--->`;
-
+/*
+ * astrocode: /hyperplan is an adversarial multi-agent planning command built entirely on
+ * oh-my-openagent's team-mode (team_create / team_task_create / team_send_message / team_*),
+ * plus a bundled hyperplan skill and category members (unspecified-low, unspecified-high,
+ * ultrabrain, artistry, deep). astrocode deliberately does NOT implement team-mode or
+ * categories, so this command cannot run its original workflow.
+ *
+ * The original body is preserved below, commented, for a future port:
+ *
+ * You are running the /hyperplan command - adversarial multi-agent planning via team-mode.
+ * LOAD THE HYPERPLAN SKILL IMMEDIATELY: skill(name="hyperplan")
+ * After loading the skill, follow its 7-phase workflow EXACTLY using this user request.
+ * Roster contract: call team_create with category members unspecified-low, unspecified-high,
+ * ultrabrain, and artistry. Include deep only if the category is enabled; if disabled or
+ * unavailable, retry without that member and state the degraded roster.
+ * If team-mode is unavailable (team_* tools missing), instruct the user to enable it.
+ *
+ * End of preserved original body.
+ */
 export const HYPERPLAN_TEMPLATE = `${HEADER}
-<!-- astrocode: /hyperplan is an adversarial multi-agent planning command built entirely on
-     oh-my-openagent's team-mode (team_create / team_task_create / team_send_message / team_*),
-     plus a bundled hyperplan skill and category members (unspecified-low, unspecified-high,
-     ultrabrain, artistry, deep). astrocode deliberately does NOT implement team-mode or
-     categories, so this command cannot run its original workflow.
-
-     The original body is preserved below, commented, for a future port:
-
-     You are running the /hyperplan command - adversarial multi-agent planning via team-mode.
-     LOAD THE HYPERPLAN SKILL IMMEDIATELY: skill(name="hyperplan")
-     After loading the skill, follow its 7-phase workflow EXACTLY using this user request.
-     Roster contract: call team_create with category members unspecified-low, unspecified-high,
-     ultrabrain, and artistry. Include deep only if the category is enabled; if disabled or
-     unavailable, retry without that member and state the degraded roster.
-     If team-mode is unavailable (team_* tools missing), instruct the user to enable it.
-
-     End of preserved original body.
--->
-
 # Hyperplan (astrocode fallback)
 
 Team-mode is not available in astrocode, so run a single-agent adversarial planning pass instead:
@@ -778,12 +779,36 @@ Team-mode is not available in astrocode, so run a single-agent adversarial plann
 $ARGUMENTS
 </user-request>`;
 
+/**
+ * /astrocode:compact (plan T12.2): manual compaction trigger. The template
+ * embeds the force marker; the chat.message seam detects it and runs the
+ * compaction engine immediately (ignoring ratio and cooldown). The marker
+ * itself never reaches the model — the messages.transform seam strips it and
+ * replaces it with the neutral text on every request build. With
+ * `compaction.enabled: false` the command refuses via a toast and nothing
+ * else happens.
+ */
+export const COMPACT_TEMPLATE = `${HEADER}
+Compact this session's context now.
+
+${FORCE_COMPACT_MARKER}
+
+This message is a trigger, not an instruction: the astrocode compaction
+engine summarizes the session (## Goal / ## State / ## Next) and prunes old
+tool outputs on its own. Do not compact anything yourself. Acknowledge in
+one short sentence and continue with the current work.`;
+
 export function buildBuiltinCommands(): Record<string, BuiltinCommandDefinition> {
   return {
     goal: {
       description:
         "(builtin) Set, show, pause, resume, or clear the active session goal",
       template: GOAL_TEMPLATE,
+    },
+    compact: {
+      description:
+        "(builtin) Force a context compaction now (ignores ratio and cooldown)",
+      template: COMPACT_TEMPLATE,
     },
     refactor: {
       description:

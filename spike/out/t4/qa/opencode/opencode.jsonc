@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "/home/astroreen/.local/share/meridian/node_modules/@rynfar/meridian/plugin/meridian.ts",
+    "/tmp/opencode-qa-b0/opencode/plugin/probe-alias.ts"
+  ],
+  "provider": {
+    "anthropic": {
+      "options": { "apiKey": "x", "baseURL": "http://127.0.0.1:3456" }
+    }
+  },
+  "permission": {
+    "bash": "allow",
+    "edit": "allow",
+    "read": "allow",
+    "webfetch": "allow"
+  }
+}

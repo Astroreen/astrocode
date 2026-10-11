@@ -19,12 +19,20 @@ import { parseModelString } from "../models/model-id";
 import { areModelsEquivalent } from "./canonicalize";
 import {
   classifyError,
+  getErrorName,
   getErrorMessage,
   getWaitSeconds,
   isRetryableError,
 } from "./classify";
 import type { ErrorClass } from "./classify";
 import type { FallbackConfig } from "./config";
+import { cooldownSecondsFor } from "./config";
+import {
+  clearAllModelCooldowns,
+  isModelCoolingDown,
+  markModelCooldown,
+} from "./cooldown";
+import { recordFallback, type TelemetryLogger } from "../telemetry/log";
 import {
   clearRetryKeys,
   getAttemptCount,
@@ -37,6 +45,7 @@ import {
 } from "./state";
 import { setSessionFallbackModel } from "./session-model";
 import { getChildSessionAgent, isChildSession } from "./subagent";
+import { log } from "../log";
 
 export interface FallbackDecision {
   retry: boolean;
@@ -44,6 +53,12 @@ export interface FallbackDecision {
   model?: string;
   detail?: string;
   errorClass?: ErrorClass;
+  /**
+   * Position of the selected model in the resolved fallback chain
+   * (0-based; plan T14 observability). Present only on `retry: true`
+   * decisions.
+   */
+  chain_index?: number;
 }
 
 // One retry at a time per session.
@@ -79,11 +94,15 @@ export function resolveFallbackModels(
 // On terminal quota pass `preferDifferentProviderFrom`: candidates from other
 // providers are stably moved to the front, so one dead account does not burn
 // the rest of its provider's models first.
+// `isBlocked` (plan T14): extra veto for candidates whose per-model cooldown
+// window is still active — a model that failed recently is skipped until the
+// window elapses.
 export function pickFallbackModel(
   candidates: string[],
   currentModel?: string,
   lastUsed?: string,
   preferDifferentProviderFrom?: string,
+  isBlocked?: (candidate: string) => boolean,
 ): string | undefined {
   let ordered = candidates;
   if (preferDifferentProviderFrom) {
@@ -103,7 +122,8 @@ export function pickFallbackModel(
   const remaining = ordered.filter(
     (candidate) =>
       !areModelsEquivalent(candidate, currentModel) &&
-      !areModelsEquivalent(candidate, lastUsed),
+      !areModelsEquivalent(candidate, lastUsed) &&
+      !(isBlocked && isBlocked(candidate)),
   );
   if (remaining.length === 0) return undefined;
   return remaining[0];
@@ -165,7 +185,13 @@ export function decideFallback(
       areModelsEquivalent(candidate, lastUsed),
     );
     if (resume && !areModelsEquivalent(resume, failedModel)) {
-      return { retry: true, reason: "retry", model: resume, errorClass };
+      return {
+        retry: true,
+        reason: "retry",
+        model: resume,
+        errorClass,
+        chain_index: chainIndexOf(candidates, resume),
+      };
     }
   }
 
@@ -176,12 +202,30 @@ export function decideFallback(
     errorClass === "terminal_quota"
       ? parseModelString(currentModel ?? "")?.providerID
       : undefined,
+    // Per-model cooldown (plan T14): a candidate whose window is still open
+    // is not selectable as the next chain link.
+    (candidate) => isModelCoolingDown(sessionID, candidate),
   );
   if (!model) {
     return { retry: false, reason: "chain-exhausted", errorClass };
   }
 
-  return { retry: true, reason: "retry", model, errorClass };
+  return {
+    retry: true,
+    reason: "retry",
+    model,
+    errorClass,
+    chain_index: chainIndexOf(candidates, model),
+  };
+}
+
+// 0-based position of `model` in the resolved chain (canonical equivalence,
+// so a suffix variant still matches its configured entry). -1 when absent —
+// callers treat that as "unknown link" rather than failing the rotation.
+function chainIndexOf(candidates: string[], model: string): number {
+  return candidates.findIndex((candidate) =>
+    areModelsEquivalent(candidate, model),
+  );
 }
 
 function isTextPart(part: unknown): part is { type: "text"; text: string } {
@@ -270,12 +314,25 @@ async function abortSession(
   }
 }
 
+// Telemetry-facing error name (plan T14): the error's own `name` when it has
+// one, else the first line of its message (session.status retry errors arrive
+// as bare {message, next} objects), else "unknown". Kept short — it lands in
+// a JSONL event field.
+function telemetryErrorName(error: unknown): string {
+  const name = getErrorName(error);
+  if (name) return name;
+  const firstLine = getErrorMessage(error).split("\n")[0] ?? "";
+  const trimmed = firstLine.trim().slice(0, 120);
+  return trimmed.length > 0 ? trimmed : "unknown";
+}
+
 export async function dispatchFallback(
   client: PluginInput["client"],
   config: FallbackConfig,
   sessionID: string,
   error: unknown,
   failedModel?: string,
+  telemetry?: TelemetryLogger,
 ): Promise<FallbackDecision> {
   if (inFlight.has(sessionID)) {
     return { retry: false, reason: "in-flight" };
@@ -359,6 +416,47 @@ export async function dispatchFallback(
 
     recordAttempt(sessionID, decision.model);
 
+    // Per-model cooldown (plan T14): the model that just failed becomes
+    // unselectable as the next chain link for its cooldown window (per-model
+    // override or the global default). Independent of telemetry — this is
+    // fallback behavior, not observability.
+    const fromModel = failedModel ?? last.model;
+    if (fromModel) {
+      markModelCooldown(sessionID, fromModel, cooldownSecondsFor(config, fromModel));
+    }
+
+    // Observability (plan T14): one "fallback" record per chain rotation,
+    // with the full chain context. Emitted for every dispatch seam
+    // (session.error / message.updated / message.part.updated /
+    // session.status) because they all converge here. `cooldown_until`
+    // mirrors the window the failing model just entered (null when the
+    // effective cooldown is 0).
+    if (telemetry) {
+      const cooldownSeconds = fromModel
+        ? cooldownSecondsFor(config, fromModel)
+        : config.cooldown_seconds;
+      recordFallback(
+        telemetry,
+        {
+          session_id: sessionID,
+          ...(last.agent ? { agent: last.agent } : {}),
+        },
+        {
+          chain_index: decision.chain_index ?? -1,
+          from_model: fromModel ?? "unknown",
+          to_model: decision.model,
+          error_name: telemetryErrorName(error),
+          error_class:
+            decision.errorClass === "terminal_quota" ? "terminal" : "transient",
+          cooldown_until:
+            cooldownSeconds > 0
+              ? new Date(Date.now() + cooldownSeconds * 1000).toISOString()
+              : null,
+          reason: decision.reason,
+        },
+      );
+    }
+
     // Carry the agent too: opencode resolves the generation agent from the last
     // user message, and a resubmission without it would fall back to the default
     // agent (wrong for subagent/child sessions).
@@ -392,7 +490,8 @@ export async function dispatchFallback(
     resetFailures(sessionID);
     clearRetryKeys(sessionID);
     return decision;
-  } catch {
+  } catch (err) {
+    log.error("fallback: dispatch failed; treating as no-retry", err);
     return { retry: false, reason: "error" };
   } finally {
     inFlight.delete(sessionID);

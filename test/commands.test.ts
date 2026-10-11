@@ -2,9 +2,10 @@ import { test, expect, describe } from "bun:test";
 import { buildBuiltinCommands } from "../src/commands";
 
 describe("buildBuiltinCommands", () => {
-  test("returns all 7 ported builtin commands", () => {
+  test("returns all 8 ported builtin commands", () => {
     const commands = buildBuiltinCommands();
     expect(Object.keys(commands).sort()).toEqual([
+      "compact",
       "goal",
       "handoff",
       "hyperplan",
