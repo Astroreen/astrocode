@@ -273,3 +273,57 @@ VERDICT: APPROVE (after fix).
 ALL FOUR FINAL WAVE VERDICTS: APPROVE. All 12 top-level plan tasks (0-11) complete. Final Wave
 complete. Ready to present consolidated results to user for explicit okay.
 - Критичный .opencode/opencode.jsonc был удалён неавторизованно предыдущим сабагентом; оркестратор восстановил файл из 0dbe72e в working tree.
+
+## [2026-10-11T02:05Z] T4 B0 spike: alias reachability via meridian — INCONCLUSIVE (quota-blocked) + source-derived pipeline
+Probe `spike/probe-alias-reach.ts` (re-runnable, idempotent). QA: server `/tmp/opencode-qa-b0`,
+isolated XDG_CONFIG_HOME, probe plugin registers Task_Create/TodoWrite/Agent with marker files.
+Evidence: `.sisyphus/evidence/2026-10-10-astrocode-telemetry-cache-reliability/T4/`.
+
+Empirical: meridian active/HTTP 200; QA opencode sent `tools=13` (10 builtin + 3 probe) through
+meridian (journal `adapter=opencode ... tools=13`) — plugin registration reaches the meridian
+boundary. But ALL 17 SDK-session attempts (3 aliases) died `API Error: 400 You're out of extra
+usage` BEFORE any tool call; 16/16 SDK transcripts contain 0 tool_use blocks. Markers correctly
+silent — quota artifact, NOT routing verdict, NOT Outcome B (nothing was swallowed; nothing happened).
+Account: meridian /health `subscriptionType: "pro"`; a concurrent interactive session (73e52a9e,
+continuation lineage) succeeded in the same minutes while every fresh-session attempt 400'd —
+failure is specific to the fresh-session path under current billing state; root cause not
+determinable from logs. Matches the known "Claude Max subscription issue" from the task preamble.
+
+Source-derived (meridian 1.35.0, read-only, line-cited in T4/meridian-static-analysis.md):
+opencode adapter runs PASSTHROUGH by default (`usesPassthrough()` → true; env-off only via
+MERIDIAN_PASSTHROUGH=0). opencode's tools (incl. plugin-registered aliases) are exposed to the
+model as `mcp__oc__<Name>` with CASE PRESERVED (`PASSTHROUGH_MCP_PREFIX`, tools registered from
+`body.tools`). Model tool_use `mcp__oc__X` → PreToolUse captures + `decision: "block"` ("Forwarding
+to client for execution") → block renamed to BARE `X` (`stripMcpPrefix`) → returned to opencode →
+opencode registry executes plugin tool `X`. SDK builtins REMOVED from the SDK session:
+BLOCKED_BUILTIN_TOOLS includes TodoWrite; CLAUDE_CODE_ONLY_TOOLS includes Agent+TodoWrite → bare
+names unknown to the model's session; native SDK execution explicitly blocked by meridian itself.
+PREDICTION (not empirically confirmed): Outcome A via mcp__oc__ route; alias registry must match
+BARE names in `tool` registration AND `tool.execute.before`; defensively tolerate mcp__oc__-prefixed
+and lowercased variants. G2 acceptance on meridian path keeps Outcome-B wording ("0 native-SDK
+TaskCreate executions") until the probe is re-run post-quota; cheap/local path acceptance stays full.
+
+GOTCHAS hit this task: (1) killed ssh leaves the remote `opencode run` alive → retry storm
+(~6 fresh SDK sessions per alias, each ~10-30s apart) — fixed with remote `timeout 240` wrapper;
+local 300s ssh timeout alone is insufficient. (2) `opencode run` retries provider 400s internally
+and prints the final error only to remote stderr — redirect stderr to a file server-side and fetch
+it even on timeout. (3) Claude Code SDK writes session transcripts under
+`~/.claude/projects/<cwd-slug>/*.jsonl` on the SERVER — these are marker-grade evidence (tool_use
+names, API errors) obtainable WITHOUT spending quota; dump them programmatically in any meridian
+probe. (4) meridian journal lines `[PROXY] <uuid> adapter=... tools=N` prove how many tools the
+client sent — cheap pipeline-integrity check without any model call. (5) The Write-tool sanitizer
+fired zero times this task when using function-call expressions and string concatenation instead of
+`const x = new Y()` / `const x = obj.prop` forms; still grep every written file for `__POTENTIAL_`.
+
+DCP removed per owner decision 2026-10-10; engine D owns context management. `@tarquinen/opencode-dcp` dropped from the NixOS deploy source plugin array (server, home-manager switch, no commit) AND from the local `~/.config/opencode/opencode.json` (local config turned out DCP-loaded too — task assumption "DCP never loaded locally" was wrong); `dcp.jsonc` now ships `compress.permission: deny` as re-add insurance. Probe proof: `compress` tool 13→12 on server anthropic path, absent on local openrouter path; `/dcp` command gone (the remaining `compress` COMMAND is the caveman skill, unrelated).
+
+## T17 — final gate (2026-10-11)
+
+- **Soak method that works:** persistent `opencode serve` started with `setsid env ... &` + `disown` (a plain `nohup ... &` gets killed by the bash tool's process-group kill on command timeout — server died twice before the setsid pattern); drive ONE session via SDK `session.prompt` loop (`spike/soak-t17.ts`) — compaction state lives in the server process, repeated `opencode run` cannot exercise multi-turn compaction. 32 prompts / 2.9 min on `openrouter/xiaomi/mimo-v2.6-pro` with `context_window: 1000` + `cooldown_seconds: 30` → 8 compactions (all native path, all ok), 0 retry-cycles, 0 fallbacks, 0 tool errors.
+- **Soak cache numbers are conditional:** with a 1000-token window an epoch break happens every cooldown window, so avg cache_ratio (0.7781) measures constant-compaction behavior; median (0.9579) is the steady-state signal. The plan's ≥0.95-avg claim needs the full-duration soak at a realistic window — still pending (wall-clock).
+- **Billing reconciliation blocked, precisely:** held OpenRouter key is provisioning-level — `/api/v1/activity` → 403 "Only management keys can fetch activity"; dashboard needs browser login. Controlled usage-delta experiment is INVALID on this machine: the QA key, the T12/T17 copies, and the main opencode instance all share ONE key (fingerprint `157489dfa0f5…`), so any window delta includes the concurrently running agent session's spend (observed 67.6% "deviation" = contamination, not a telemetry bug). A dedicated QA-only restricted key is the fix for any future soak.
+- **Gate outcome: 4 pass (G3 DCP-off, G4 compaction, G5 determinism, G6 budget) / 2 partial (G1 cache, G2 aliases — meridian legs quota-blocked).** G2 meridian acceptance stays on the Outcome-B wording until the T4 probe is re-run post-quota; static prediction is Outcome A (mcp__oc__ passthrough with bare-name strip), unconfirmed.
+- **T12 runaway-loop defect (found+fixed, keep the lesson):** scratch summarizer sessions tripped the compaction trigger → new scratch session → trigger again = unbounded token-burning chain (~20 sessions in 8 min in pre-fix telemetry). Fix: `isScratchSession(sessionID)` guard at the TOP of `maybeCompact` (before force consumption) so turn-boundary/idle/manual seams are all covered. Any future trigger seam must be added BELOW that guard.
+- **`invalid` builtin tool:** opencode ships a builtin tool literally named `invalid` whose JSON-schema lacks root `type` — the T15 validator logs 1 violation per tool-definition evaluation (896 records in a 32-request soak; log_only, zero impact). If the noise bothers anyone: `schema_validator.log_only: false` applies the documented safe repair, or fix upstream.
+- **T13 measurement lesson:** per-model reasoning overrides are unmeasurable on `mimo-v2.6-pro` (fallback family → no provider options attached → baseline and override are wire-identical; delta = noise). Real delta needs a claude/gpt-family model. Plumbing + mapping are unit-tested; don't re-attempt the measurement on the cheap path.
+- **`MERIDIAN_BETA_POLICY=allow-all`** recommended in `meridian.nix` (upstream/config, NOT implemented): without it extended-cache-ttl 1h on claude-max is unavailable (meridian strips billable betas → ~3× TTFB, ~3× tokens on long sessions; meridian issue #278). Owner decision pending.

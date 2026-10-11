@@ -134,7 +134,13 @@ astrocode-specific in `opencode.jsonc`:
   "sampling": { "claude": { "temperature": 0.4, "topP": 0.8 } },
   "skills": { "extraDirs": ["/home/you/.cache/opencode/skills"] },
   "idleContinuation": { "enabled": false, "max": 3 },
-  "reasoning": { "enabled": true }
+  "reasoning": { "enabled": true },
+  "reasoning_overrides": {
+    // Per-model reasoning overrides, keyed by the full "providerID/modelID".
+    // claude entries MUST carry an explicit boolean clear_thinking.
+    "anthropic/claude-sonnet-5-5": { "level": "medium", "clear_thinking": true },
+    "openrouter/xiaomi/mimo-v2.6-pro": { "level": "minimal", "clear_thinking": false }
+  }
 }
 ```
 
@@ -225,6 +231,22 @@ correct, since switching models won't fix a bad key.
   `splitReasoningSuffix` parses a trailing `:level` (or `:auto`) off a model id, and
   `reasoningConfigForFamily(family, level?)` maps the level onto claude thinking / gpt
   `reasoningEffort` (gpt collapses `high`/`xhigh`/`max` to `high`, `off`/`minimal` to `minimal`).
+- **Per-model reasoning overrides** (`reasoning_overrides` in astrocode.jsonc, plan T13): a map
+  keyed by the full `providerID/modelID` (same format as fallback chains) with
+  `{ level, clear_thinking, budget_tokens? }` values, applied per request in the `chat.params`
+  hook. Precedence: a `:level` suffix in the model id (runtime id or the agent's configured
+  model string) **beats the override**; the override beats the family default. For claude the
+  level maps onto a thinking budget (`off` disables thinking; `minimal`=2048, `low`=8192,
+  `medium`=16384, `high`+`=32000`) and `budget_tokens` overrides that budget; `clear_thinking`
+  is attached to the provider options for claude-family models only and MUST be an explicit
+  boolean on claude entries (the underlying default is generation-dependent). gpt entries map
+  the level onto `reasoningEffort`. Other families (glm/grok/minimax/openrouter-generic/…)
+  take no reasoning params, so their entries are declarative intent only and their options are
+  left untouched. Invalid entries (unknown level, non-boolean `clear_thinking`, bad
+  `budget_tokens`, claude entry without explicit `clear_thinking`, key without a provider
+  prefix) are dropped with a `log.warn`, never fatal. When overrides are configured and a
+  request's model has no entry, the family default applies with a single deduplicated
+  `log.warn` per model id.
 - **Sampling**: per-family `temperature`/`topP` map. Defaults keep kimi/glm/openrouter-generic at
   0.3/0.9; override or extend via `sampling.<family>`.
 - **Environment/date context** (`src/env/context.ts`): a `<omo-env>` block (timezone, locale,

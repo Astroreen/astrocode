@@ -422,4 +422,33 @@
     // gpt reasoningEffort "medium" (or :level suffix ladder). Set false to
     // disable entirely.
     "reasoning": { "enabled": true },
+
+    // ── Per-model reasoning overrides (plan T13) ────────────────────────────
+    // Keyed by the full "providerID/modelID" (same format as fallback chains).
+    // Precedence: a `:level` suffix in the model id beats an override; an
+    // override beats the family default (claude thinking 32000 / gpt effort
+    // medium). claude entries MUST carry an explicit boolean `clear_thinking`
+    // (generation-dependent default); `budget_tokens` optionally pins the
+    // claude thinking budget over the level-derived one
+    // (minimal=2048, low=8192, medium=16384, high+=32000).
+    //
+    // Role mapping over the 12 agents (overrides are per-MODEL, and agents
+    // share models, so the level follows the model's dominant role):
+    //   opus-5-5   -> high    (root-cause/orchestration: sisyphus, hephaestus,
+    //                          prometheus, oracle)
+    //   sonnet-5-5 -> medium  (review/executor workhorse: sisyphus-junior,
+    //                          atlas, metis, librarian, multimodal-looker, scribe)
+    //   haiku-5-5  -> minimal (cheap recon: explore, momus)
+    // Non-claude notes: gpt-6-luna is a gpt-family reasoning model, so its
+    // level maps to reasoningEffort; glm/other openrouter families take no
+    // reasoning params (their entries are declarative intent — glm reasoning
+    // is controlled by the model id, per src/models/tuning.ts).
+    "reasoning_overrides": {
+        "anthropic/claude-opus-5-5": { "level": "high", "clear_thinking": true },
+        "anthropic/claude-sonnet-5-5": { "level": "medium", "clear_thinking": true },
+        "anthropic/claude-haiku-5-5": { "level": "minimal", "clear_thinking": true },
+        "openrouter/xiaomi/mimo-v2.6-pro": { "level": "minimal", "clear_thinking": false },
+        "openrouter/openai/gpt-6-luna": { "level": "low" },
+        "openrouter/z-ai/glm-5.3-flash": { "level": "off" },
+    },
 }
