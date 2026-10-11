@@ -85,10 +85,11 @@ interface TodoLike {
 export async function maybeContinueIdle(
   client: PluginInput["client"],
   sessionID: string,
-  options: { max?: number; now?: number } = {},
+  options: { max?: number; now?: number; reason?: "idle" | "compaction" } = {},
 ): Promise<IdleContinuationResult> {
   const max = options.max ?? DEFAULT_MAX_CONTINUATIONS;
   const now = options.now ?? Date.now();
+  const reason = options.reason ?? "idle";
   if (inFlight.has(sessionID)) return { continued: false, reason: "in-flight" };
   if (getIdleContinuationCount(sessionID) >= max) {
     return { continued: false, reason: "max-reached" };
@@ -104,17 +105,24 @@ export async function maybeContinueIdle(
 
   inFlight.add(sessionID);
   try {
-    const result = await client.session.todo({ path: { id: sessionID } });
-    if (result.error || !Array.isArray(result.data) || result.data.length === 0) {
-      return { continued: false, reason: "no-todos" };
-    }
+    // The idle path is todo-driven: it only continues when unfinished todos
+    // remain. The post-compaction path is NOT todo-gated — the point is to
+    // resume whatever the agent was doing after its context was compacted,
+    // whether or not it tracked that work as todos.
+    let incomplete: TodoLike[] = [];
+    if (reason === "idle") {
+      const result = await client.session.todo({ path: { id: sessionID } });
+      if (result.error || !Array.isArray(result.data) || result.data.length === 0) {
+        return { continued: false, reason: "no-todos" };
+      }
 
-    const incomplete = (result.data as TodoLike[]).filter((todo) => {
-      const status = (todo.status ?? "").toLowerCase();
-      return status !== "completed" && status !== "cancelled";
-    });
-    if (incomplete.length === 0) {
-      return { continued: false, reason: "all-done" };
+      incomplete = (result.data as TodoLike[]).filter((todo) => {
+        const status = (todo.status ?? "").toLowerCase();
+        return status !== "completed" && status !== "cancelled";
+      });
+      if (incomplete.length === 0) {
+        return { continued: false, reason: "all-done" };
+      }
     }
 
     const state = getState(sessionID);
@@ -158,9 +166,12 @@ export async function maybeContinueIdle(
       type: "text",
       synthetic: true,
       text:
-        "[astrocode idle-continuation] Work on this session is not finished. " +
-        "Continue with the remaining todos and verify each result before marking it complete:" +
-        (remaining.length > 0 ? `\n- ${remaining.join("\n- ")}` : ""),
+        reason === "compaction"
+          ? "[astrocode] Context was compacted to stay within the window. " +
+            "Continue the task you were working on; re-read the plan or state if needed."
+          : "[astrocode idle-continuation] Work on this session is not finished. " +
+            "Continue with the remaining todos and verify each result before marking it complete:" +
+            (remaining.length > 0 ? `\n- ${remaining.join("\n- ")}` : ""),
     };
 
     // Continue on the fallback model if one was already used this session.

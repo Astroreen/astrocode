@@ -184,3 +184,29 @@ describe("idle continuation map eviction", () => {
     expect(getIdleBackoffState("ev-1024").lastInjectedAt).toBeDefined();
   });
 });
+
+describe("post-compaction continuation (reason: compaction)", () => {
+  beforeEach(() => {
+    resetIdleContinuationState();
+  });
+
+  test("continues without todos and uses the compaction text", async () => {
+    const { client, sent } = fakeClient([]); // no todos at all
+    const result = await maybeContinueIdle(client, "pc-1", {
+      reason: "compaction",
+      now: 0,
+    });
+    expect(result.continued).toBe(true);
+    expect(sent.length).toBe(1);
+    const call = sent[0] as { body: { parts: { text: string }[] } };
+    expect(call.body.parts[0].text).toContain("Context was compacted");
+  });
+
+  test("idle reason still requires unfinished todos", async () => {
+    const { client, sent } = fakeClient([]);
+    const result = await maybeContinueIdle(client, "pc-2", { now: 0 });
+    expect(result.continued).toBe(false);
+    expect(result.reason).toBe("no-todos");
+    expect(sent.length).toBe(0);
+  });
+});

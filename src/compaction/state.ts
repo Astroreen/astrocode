@@ -42,6 +42,14 @@ export interface CompactionSessionState {
    * forced re-compact of an already-compacted region stays a no-op.
    */
   force_compact: boolean;
+  /**
+   * Post-compaction continuation pending: set by the engine when a compaction
+   * succeeds, consumed (read + cleared) by the session.idle seam, which then
+   * injects a synthetic continuation prompt so the agent resumes the task
+   * instead of stopping after its context was compacted. Only acted on when
+   * `compaction.continue_after` is enabled.
+   */
+  pending_continuation: boolean;
   /** Covered parts: partID -> sha256 of the stub bytes sent for it (T10.2). */
   stubbed_parts: Map<string, string>;
   /** Guard conflicts already reported to telemetry (dedup, one per part). */
@@ -75,6 +83,7 @@ export function ensureCompactionState(sessionID: string): CompactionSessionState
       region_hashes: [],
       in_flight: false,
       force_compact: false,
+      pending_continuation: false,
       epoch_dirty: false,
       stubbed_parts: new Map(),
       guard_conflicts_reported: new Set(),
@@ -117,6 +126,24 @@ export function consumeForceCompact(sessionID: string): boolean {
   const state = states.get(sessionID);
   if (!state || !state.force_compact) return false;
   state.force_compact = false;
+  return true;
+}
+
+/** Arm the post-compaction continuation (set on a successful compaction). */
+export function setPendingContinuation(sessionID: string): void {
+  const state = ensureCompactionState(sessionID);
+  state.pending_continuation = true;
+}
+
+/**
+ * Consume the post-compaction continuation flag (read-and-clear, like
+ * consumeForceCompact): the idle seam continues the agent exactly once per
+ * successful compaction.
+ */
+export function consumePendingContinuation(sessionID: string): boolean {
+  const state = states.get(sessionID);
+  if (!state || !state.pending_continuation) return false;
+  state.pending_continuation = false;
   return true;
 }
 

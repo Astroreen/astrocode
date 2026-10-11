@@ -106,6 +106,7 @@ import {
 } from "./compaction/force";
 import { COMPACTING_PROMPT } from "./compaction/prompt";
 import {
+  consumePendingContinuation,
   lastUsage,
   resetCompactionState,
   setForceCompact,
@@ -443,15 +444,27 @@ const astrocodePlugin: Plugin = async (input, options) => {
             // boundary. Runs before idle continuation so a compaction that
             // fires lands before the next prompt is sent.
             if (astrocodeConfig.compaction.enabled) {
-              maybeCompactAtIdle(
+              await maybeCompactAtIdle(
                 input.client,
                 telemetry,
                 astrocodeConfig.compaction,
                 target,
               );
             }
-            // Idle continuation is independent of fallback enablement.
-            if (astrocodeConfig.idleContinuation.enabled) {
+            // Post-compaction continuation: a compaction (at this seam or the
+            // turn boundary) armed the flag; re-prompt the model so it resumes
+            // the task instead of stopping after its context was compacted.
+            if (
+              astrocodeConfig.compaction.continue_after &&
+              consumePendingContinuation(target)
+            ) {
+              const cont = await maybeContinueIdle(input.client, target, {
+                reason: "compaction",
+                max: astrocodeConfig.idleContinuation.max,
+              });
+              log.info(`compaction-continuation: ${cont.reason}`);
+            } else if (astrocodeConfig.idleContinuation.enabled) {
+              // Idle continuation is independent of fallback enablement.
               const result = await maybeContinueIdle(input.client, target, {
                 max: astrocodeConfig.idleContinuation.max,
               });
@@ -506,7 +519,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
               payload?.tokens &&
               payload.model
             ) {
-              maybeCompactAtTurnBoundary(
+              await maybeCompactAtTurnBoundary(
                 input.client,
                 telemetry,
                 astrocodeConfig.compaction,

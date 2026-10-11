@@ -28,6 +28,7 @@ import {
   rememberUsage,
   setEpochDirty,
   setInFlight,
+  setPendingContinuation,
   setSummaryFrozen,
 } from "./state";
 import {
@@ -146,6 +147,11 @@ export async function maybeCompact(
       setEpochDirty(sessionID, true);
     }
     markCompactionComplete(sessionID, Date.now());
+    // Arm the post-compaction continuation: the session.idle seam consumes
+    // this and re-prompts the model to resume the task (the engine runs at a
+    // turn boundary, unlike DCP's model-invoked compress, so without it the
+    // agent just stops after its context was compacted).
+    setPendingContinuation(sessionID);
     log.info(
       `compaction: ${outcome.path} summarizer ran ` +
         `(ratio ${decision.ratio?.toFixed(2) ?? "?"}, ${source})`,
@@ -167,9 +173,9 @@ export function maybeCompactAtTurnBoundary(
   cfg: CompactionTriggerConfig & { summarizer_model?: string },
   sessionID: string,
   usage: CompactionUsage,
-): void {
+): Promise<MaybeCompactResult> {
   rememberUsage(sessionID, usage);
-  void maybeCompact(client, logger, cfg, sessionID, usage, "turn_boundary");
+  return maybeCompact(client, logger, cfg, sessionID, usage, "turn_boundary");
 }
 
 /** session.idle seam: evaluate against the last remembered usage. */
@@ -178,8 +184,8 @@ export function maybeCompactAtIdle(
   logger: TelemetryLogger,
   cfg: CompactionTriggerConfig & { summarizer_model?: string },
   sessionID: string,
-): void {
-  void maybeCompact(
+): Promise<MaybeCompactResult> {
+  return maybeCompact(
     client,
     logger,
     cfg,

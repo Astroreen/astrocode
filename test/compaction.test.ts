@@ -15,6 +15,7 @@ import {
 import {
   addRegionHash,
   compactionStateSnapshot,
+  consumePendingContinuation,
   ensureCompactionState,
   getCompactionState,
   hasRegionHash,
@@ -205,6 +206,7 @@ describe("compaction config parsing", () => {
       context_windows: {},
       prune_stub_chars: COMPACTION_PRUNE_STUB_CHARS_DEFAULT,
       cooldown_seconds: COMPACTION_COOLDOWN_SECONDS_DEFAULT,
+      continue_after: true,
     });
     expect(COMPACTION_TRIGGER_RATIO_DEFAULT).toBe(0.8);
     expect(COMPACTION_CONTEXT_WINDOW_DEFAULT).toBe(200000);
@@ -320,6 +322,7 @@ describe("compaction config parsing", () => {
       context_windows: {},
       prune_stub_chars: 200,
       cooldown_seconds: 300,
+      continue_after: true,
     });
   });
 
@@ -826,6 +829,36 @@ describe("maybeCompact", () => {
     );
     expect(result).toEqual({ ran: false, reason: "scratch-session" });
     expect(client.state.summarizeCalls).toBe(0);
+  });
+
+  test("a successful compaction arms the post-compaction continuation flag", async () => {
+    const client = mockClient({ promptText: VALID_SUMMARY });
+    const result = await maybeCompact(
+      client,
+      createTelemetryLogger({ enabled: false }),
+      cfg,
+      "ses-cont",
+      usage({ input: 900 }),
+      "turn_boundary",
+    );
+    expect(result.ran).toBe(true);
+    expect(consumePendingContinuation("ses-cont")).toBe(true);
+    // read-and-clear: consumed exactly once
+    expect(consumePendingContinuation("ses-cont")).toBe(false);
+  });
+
+  test("a gated (no-op) evaluation does not arm the continuation flag", async () => {
+    const client = mockClient();
+    const result = await maybeCompact(
+      client,
+      createTelemetryLogger({ enabled: false }),
+      { ...cfg, enabled: false },
+      "ses-cont-off",
+      usage({ input: 900 }),
+      "turn_boundary",
+    );
+    expect(result.ran).toBe(false);
+    expect(consumePendingContinuation("ses-cont-off")).toBe(false);
   });
 
   test("triggered -> runs, freezes scratch summary, stamps cooldown, releases lock", async () => {

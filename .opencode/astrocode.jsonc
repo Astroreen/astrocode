@@ -459,6 +459,10 @@
     // boundary or session.idle; the summary is produced by a separate cheap
     // model (native summarize route, scratch-session fallback) and frozen
     // once per region (hash-guarded). Manual trigger: /compact.
+    // `continue_after` re-prompts the model after an auto-compaction so it
+    // resumes the task (DCP's model-invoked compress continued the turn
+    // naturally; our rule-triggered engine runs at a turn boundary, so without
+    // this the agent just stops). Shares the idle-continuation budget.
     "compaction": {
         "enabled": true,
         "summarizer_model": "openrouter/xiaomi/mimo-v2.6-pro",
@@ -467,5 +471,6 @@
         "context_windows": {},
         "prune_stub_chars": 200,
         "cooldown_seconds": 300,
+        "continue_after": true,
     },
 }

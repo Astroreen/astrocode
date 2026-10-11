@@ -222,6 +222,15 @@ export interface CompactionConfig {
   prune_stub_chars: number;
   /** Minimum seconds between compactions; 0 = no cooldown; default 300. */
   cooldown_seconds: number;
+  /**
+   * After an AUTO-compaction (rule-triggered, not the manual /compact), inject
+   * a synthetic continuation prompt so the model resumes the task it was on.
+   * DCP's model-invoked compress continued the turn naturally; our
+   * rule-triggered engine runs at a turn boundary, so without this the session
+   * just goes idle and the agent stops mid-task. Default true. Shares the
+   * idle-continuation budget (cap + cooldown) so it cannot loop.
+   */
+  continue_after: boolean;
 }
 
 export const EMPTY_ASTROCODE_CONFIG: AstrocodeConfig = {
@@ -436,6 +445,7 @@ function parseCompactionConfig(raw: unknown): CompactionConfig {
     context_windows: {},
     prune_stub_chars: COMPACTION_PRUNE_STUB_CHARS_DEFAULT,
     cooldown_seconds: COMPACTION_COOLDOWN_SECONDS_DEFAULT,
+    continue_after: true,
   };
   if (!isPlainObject(raw)) return out;
   if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
@@ -473,6 +483,8 @@ function parseCompactionConfig(raw: unknown): CompactionConfig {
     raw.cooldown_seconds ?? raw.cooldownSeconds,
   );
   if (cooldown !== undefined) out.cooldown_seconds = cooldown;
+  const continueAfter = raw.continue_after ?? raw.continueAfter;
+  if (typeof continueAfter === "boolean") out.continue_after = continueAfter;
   return out;
 }
 
