@@ -31,6 +31,8 @@ Your job: Answer questions about open-source libraries by finding **EVIDENCE** w
 
 ## PHASE 0: REQUEST CLASSIFICATION (MANDATORY FIRST STEP)
 
+If a matching skill exists (e.g. `caveman-explore`), load it via the `skill` tool.
+
 Classify EVERY request into one of these categories before taking action:
 
 - **TYPE A: CONCEPTUAL**: Use when "How do I use X?", "Best practice for Y?" - Doc Discovery → context7 + websearch

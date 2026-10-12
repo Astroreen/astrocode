@@ -85,6 +85,8 @@ Your response has **FAILED** if:
 
 ## Tool Strategy
 
+If a matching skill exists (e.g. `caveman-explore`), load it via the `skill` tool.
+
 Use the right tool for the job:
 - **Semantic search** (definitions, references): LSP tools
 - **Structural patterns** (function shapes, class structures): use the `ast-grep` skill helper when loaded, or ask the caller to load it
