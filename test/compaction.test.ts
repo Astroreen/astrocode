@@ -46,10 +46,12 @@ import {
   type SummarizerClient,
 } from "../src/compaction/summarize";
 import { maybeCompact } from "../src/compaction/run";
+import { clearChildSessions, registerChildSession } from "../src/fallback/subagent";
 import { createTelemetryLogger, type TelemetryRecord } from "../src/telemetry/log";
 
 afterEach(() => {
   resetCompactionState();
+  clearChildSessions();
 });
 
 function tempDir(): string {
@@ -847,6 +849,25 @@ describe("maybeCompact", () => {
     expect(consumePendingContinuation("ses-cont")).toBe(false);
   });
 
+  test("a child (subagent) session never arms the continuation flag", async () => {
+    const client = mockClient({ promptText: VALID_SUMMARY });
+    registerChildSession("ses-child", "explore");
+    const result = await maybeCompact(
+      client,
+      createTelemetryLogger({ enabled: false }),
+      cfg,
+      "ses-child",
+      usage({ input: 900 }),
+      "turn_boundary",
+    );
+    // The compaction still runs for the child (its history is compacted)...
+    expect(result.ran).toBe(true);
+    // ...but the post-compaction continuation is NOT armed: opencode's `task`
+    // tool owns the child's lifecycle and has already returned by the time the
+    // child idles, so a continuation would run orphaned.
+    expect(consumePendingContinuation("ses-child")).toBe(false);
+  });
+
   test("a gated (no-op) evaluation does not arm the continuation flag", async () => {
     const client = mockClient();
     const result = await maybeCompact(
@@ -920,6 +941,9 @@ describe("maybeCompact", () => {
     expect(first.ran).toBe(false);
     expect(first.reason).toBe("summarizer-failed");
     expect(compactionStateSnapshot("ses-fail").in_flight).toBe(false);
+    // The continuation armed synchronously before the summarizer must be
+    // disarmed again on failure (no spurious nudge).
+    expect(consumePendingContinuation("ses-fail")).toBe(false);
     const second = await maybeCompact(client, logger, cfg, "ses-fail", usage({ input: 900 }), "turn_boundary");
     expect(second.reason).toBe("cooldown");
   });

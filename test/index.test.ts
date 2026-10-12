@@ -584,7 +584,7 @@ describe("astrocode plugin — subagent session tracking", () => {
     expect(isChildSession("root-2")).toBe(false);
   });
 
-  test("fallback disabled -> children are not tracked", async () => {
+  test("children are tracked even when fallback is disabled (compaction guard needs it)", async () => {
     clearChildSessions();
     const hooks = await astrocodePlugin({} as any);
 
@@ -595,7 +595,74 @@ describe("astrocode plugin — subagent session tracking", () => {
       },
     } as any);
 
+    // Fallback is off, but the registration must still happen: the compaction
+    // engine's continuation guard keys off isChildSession regardless of
+    // fallback enablement.
+    expect(isChildSession("child-3")).toBe(true);
+
+    await hooks.event!({
+      event: {
+        type: "session.deleted",
+        properties: { info: { id: "child-3", parentID: "root-3" } },
+      },
+    } as any);
     expect(isChildSession("child-3")).toBe(false);
+  });
+
+  test("session.idle on a child never injects a continuation", async () => {
+    clearChildSessions();
+    resetIdleContinuationState();
+    let promptAsyncCalls = 0;
+    const client = {
+      session: {
+        todo: async () => ({ data: [{ status: "pending", content: "task" }] }),
+        promptAsync: async () => {
+          promptAsyncCalls += 1;
+          return { data: {} };
+        },
+      },
+    } as any;
+    // Idle continuation is ON so that, absent the child guard, a continuation
+    // would fire (unfinished todo, no abort window).
+    const hooks = await astrocodePlugin({ client } as any, {
+      idleContinuation: { enabled: true, max: 3 },
+    } as any);
+
+    await hooks.event!({
+      event: {
+        type: "session.created",
+        properties: { info: { id: "child-idle", parentID: "root", agent: "explore" } },
+      },
+    } as any);
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "child-idle" } },
+    } as any);
+
+    expect(promptAsyncCalls).toBe(0);
+  });
+
+  test("session.idle on a top-level session still continues (guard is child-only)", async () => {
+    clearChildSessions();
+    resetIdleContinuationState();
+    let promptAsyncCalls = 0;
+    const client = {
+      session: {
+        todo: async () => ({ data: [{ status: "pending", content: "task" }] }),
+        promptAsync: async () => {
+          promptAsyncCalls += 1;
+          return { data: {} };
+        },
+      },
+    } as any;
+    const hooks = await astrocodePlugin({ client } as any, {
+      idleContinuation: { enabled: true, max: 3 },
+    } as any);
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "top-idle" } },
+    } as any);
+
+    expect(promptAsyncCalls).toBe(1);
   });
 });
 

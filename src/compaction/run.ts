@@ -21,6 +21,7 @@ import {
 } from "../telemetry/log";
 import {
   consumeForceCompact,
+  clearPendingContinuation,
   getCompactionState,
   isScratchSession,
   lastUsage,
@@ -31,6 +32,7 @@ import {
   setPendingContinuation,
   setSummaryFrozen,
 } from "./state";
+import { isChildSession } from "../fallback/subagent";
 import {
   summarize,
   type SummarizeOutcome,
@@ -121,6 +123,21 @@ export async function maybeCompact(
 
   const ctx = contextFor(sessionID, usage);
 
+  // Arm the post-compaction continuation BEFORE the summarizer await. A slow
+  // summarizer (a scratch session on a slow model can run well past the idle
+  // seam's bounded in-flight wait) would otherwise finish AFTER session.idle
+  // already fired — the flag gets armed too late, no further idle arrives, and
+  // the agent stops mid-task. Arming synchronously closes that race.
+  //
+  // Child (subagent) sessions never arm it: opencode's `task` tool owns the
+  // child's lifecycle and has already returned the child's result by the time
+  // the child goes idle, so any continuation we inject runs orphaned and
+  // leaves the parent believing the subagent stopped after partial work. The
+  // child's result IS the task boundary; the parent orchestrator decides what
+  // happens next.
+  const armContinuation = !isChildSession(sessionID);
+  if (armContinuation) setPendingContinuation(sessionID);
+
   // Synchronous in_flight set before the first await — the double-seam guard.
   setInFlight(sessionID, true);
   try {
@@ -147,11 +164,6 @@ export async function maybeCompact(
       setEpochDirty(sessionID, true);
     }
     markCompactionComplete(sessionID, Date.now());
-    // Arm the post-compaction continuation: the session.idle seam consumes
-    // this and re-prompts the model to resume the task (the engine runs at a
-    // turn boundary, unlike DCP's model-invoked compress, so without it the
-    // agent just stops after its context was compacted).
-    setPendingContinuation(sessionID);
     log.info(
       `compaction: ${outcome.path} summarizer ran ` +
         `(ratio ${decision.ratio?.toFixed(2) ?? "?"}, ${source})`,
@@ -159,7 +171,10 @@ export async function maybeCompact(
     return { ran: true, reason: decision.reason, outcome };
   } catch (err) {
     // Both paths failed: stamp the cooldown anyway (anti-storm) and release
-    // the flight lock so a later turn can retry after it elapses.
+    // the flight lock so a later turn can retry after it elapses. Also disarm
+    // the continuation armed above — a failed compaction must not nudge the
+    // model.
+    if (armContinuation) clearPendingContinuation(sessionID);
     markCompactionComplete(sessionID, Date.now());
     log.error("compaction: summarizer failed; session continues un-compacted", err);
     return { ran: false, reason: "summarizer-failed" };

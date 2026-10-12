@@ -129,10 +129,21 @@ export function consumeForceCompact(sessionID: string): boolean {
   return true;
 }
 
-/** Arm the post-compaction continuation (set on a successful compaction). */
+/** Arm the post-compaction continuation (set when a compaction run starts). */
 export function setPendingContinuation(sessionID: string): void {
   const state = ensureCompactionState(sessionID);
   state.pending_continuation = true;
+}
+
+/**
+ * Disarm the post-compaction continuation. The flag is armed synchronously
+ * before the summarizer runs (so a slow summarizer cannot lose the race with
+ * session.idle); a failed attempt must clear it again so a summarizer failure
+ * cannot leave a spurious continuation armed.
+ */
+export function clearPendingContinuation(sessionID: string): void {
+  const state = states.get(sessionID);
+  if (state) state.pending_continuation = false;
 }
 
 /**

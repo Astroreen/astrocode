@@ -60,6 +60,7 @@ import {
 } from "./fallback/session-model";
 import {
   clearChildSessions,
+  isChildSession,
   registerChildSessionFromInfo,
   unregisterChildSession,
 } from "./fallback/subagent";
@@ -462,6 +463,13 @@ const astrocodePlugin: Plugin = async (input, options) => {
                 target,
               );
             }
+            // Child (subagent) sessions are owned by opencode's `task` tool,
+            // which has already returned the child's result by the time the
+            // child goes idle. Re-prompting it here would run the continuation
+            // orphaned (the parent no longer waits on it) and make the parent
+            // believe the subagent stopped after partial work. The child's
+            // result IS the task boundary; the parent decides what is next.
+            if (isChildSession(target)) return;
             // Post-compaction continuation: a compaction (at this seam or the
             // turn boundary) armed the flag; re-prompt the model so it resumes
             // the task instead of stopping after its context was compacted.
@@ -553,12 +561,13 @@ const astrocodePlugin: Plugin = async (input, options) => {
           captureToolError(telemetry, event.properties?.part);
         }
 
-        if (!fallbackConfig.enabled) return;
-
         // Track child (subagent) sessions. opencode's built-in `task` tool
         // creates them with `parentID`, and children need different fallback
         // treatment (see src/fallback/subagent.ts). Registered before the
-        // dispatch branches so a child's very first error is already classified.
+        // dispatch branches so a child's very first error is already classified
+        // — and, deliberately, BEFORE the fallback gate: the compaction engine
+        // and the idle/continuation seams must be able to tell a subagent
+        // session from a top-level one even when fallback is disabled.
         if (event.type === "session.created") {
           if (registerChildSessionFromInfo(event.properties?.info)) {
             log.info(`subagent: tracking child session ${event.properties.info.id}`);
@@ -569,6 +578,8 @@ const astrocodePlugin: Plugin = async (input, options) => {
           unregisterChildSession(event.properties.info.id);
           return;
         }
+
+        if (!fallbackConfig.enabled) return;
 
         const logDecision = (hook: string, decision: {
           reason: string;
