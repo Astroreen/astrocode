@@ -411,11 +411,12 @@
     },
 
     // ── Idle continuation ───────────────────────────────────────────────────
-    // Opt-in: when a session goes idle with unfinished todos, continue it
-    // automatically (capped per session). Off by default to avoid loops —
-    // flip `enabled` to true to arm it; `max` caps sends per session, cooldown
-    // and failure caps are hardcoded (src/idle/constants.ts).
-    "idleContinuation": { "enabled": false, "max": 3 },
+    // On by default in this project: todo-driven continuation covers "model
+    // answered cleanly but stopped mid-task". Plugin default stays false
+    // (src/config/astrocode.ts) — opt-in per project to avoid loops. `max`
+    // caps sends per session (shared with the post-compaction pin budget);
+    // cooldown and failure caps are hardcoded (src/idle/constants.ts).
+    "idleContinuation": { "enabled": true, "max": 3 },
 
     // ── Reasoning injection ─────────────────────────────────────────────────
     // Inject family reasoning options: claude extended thinking (32000 budget),
