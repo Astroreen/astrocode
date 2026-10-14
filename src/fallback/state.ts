@@ -163,4 +163,32 @@ export function clearRetryKeys(sessionID: string): void {
 export function clearAll(): void {
   states.clear();
   retryKeys.clear();
+  selfAborts.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Self-abort marker (continuation re-arm)
+// ---------------------------------------------------------------------------
+
+// dispatchFallback aborts the session programmatically before every resubmit.
+// That abort can surface as a session.error abort event; the plugin's abort
+// handler must be able to tell it apart from a genuine user cancellation, or
+// the re-armed continuation pin would be wiped by the fix's own dispatch.
+// Read-and-clear with a freshness window: a double-emitted abort event
+// degrades to one missed re-pin, never to a spurious pin over a real abort.
+const SELF_ABORT_WINDOW_MS = 10_000;
+const selfAborts = new Map<string, number>();
+
+/** Remember that THIS plugin aborted the session (fallback dispatch). */
+export function markSelfAbort(sessionID: string, now: number = Date.now()): void {
+  selfAborts.set(sessionID, now);
+  evictOldestByStamp(selfAborts);
+}
+
+/** Read-and-clear: true iff marked within SELF_ABORT_WINDOW_MS. */
+export function takeSelfAbort(sessionID: string, now: number = Date.now()): boolean {
+  const stamp = selfAborts.get(sessionID);
+  if (stamp === undefined) return false;
+  selfAborts.delete(sessionID);
+  return now - stamp <= SELF_ABORT_WINDOW_MS;
 }

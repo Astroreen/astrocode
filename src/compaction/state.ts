@@ -50,6 +50,13 @@ export interface CompactionSessionState {
    * `compaction.continue_after` is enabled.
    */
   pending_continuation: boolean;
+  /**
+   * A compaction-continuation pin was sent and has not yet been answered by a
+   * clean generation. Re-arm source: set again by the fallback-rotation seam
+   * while this holds. Cleared by a clean answer, chain exhaustion, a genuine
+   * user message or an abort.
+   */
+  continuation_unacked: boolean;
   /** Covered parts: partID -> sha256 of the stub bytes sent for it (T10.2). */
   stubbed_parts: Map<string, string>;
   /** Guard conflicts already reported to telemetry (dedup, one per part). */
@@ -84,6 +91,7 @@ export function ensureCompactionState(sessionID: string): CompactionSessionState
       in_flight: false,
       force_compact: false,
       pending_continuation: false,
+      continuation_unacked: false,
       epoch_dirty: false,
       stubbed_parts: new Map(),
       guard_conflicts_reported: new Set(),
@@ -129,7 +137,11 @@ export function consumeForceCompact(sessionID: string): boolean {
   return true;
 }
 
-/** Arm the post-compaction continuation (set when a compaction run starts). */
+/**
+ * Arm the post-compaction continuation. Armed by the compaction run when it
+ * starts, and again by `rearmPendingContinuation` when a fallback rotation
+ * kills the pinned generation (continuation re-arm).
+ */
 export function setPendingContinuation(sessionID: string): void {
   const state = ensureCompactionState(sessionID);
   state.pending_continuation = true;
@@ -156,6 +168,37 @@ export function consumePendingContinuation(sessionID: string): boolean {
   if (!state || !state.pending_continuation) return false;
   state.pending_continuation = false;
   return true;
+}
+
+/** Mark the compaction-continuation pin as sent (awaiting a clean answer). */
+export function markContinuationSent(sessionID: string): void {
+  const state = ensureCompactionState(sessionID);
+  state.continuation_unacked = true;
+}
+
+/**
+ * Re-arm after a fallback rotation. Only effective while a pin is unacked —
+ * a rotation in a session that never got a pin must not fabricate one.
+ * Returns true when the flag was armed.
+ */
+export function rearmPendingContinuation(sessionID: string): boolean {
+  const state = states.get(sessionID);
+  if (!state || !state.continuation_unacked) return false;
+  state.pending_continuation = true;
+  return true;
+}
+
+/** Clear the whole continuation intent (arm + unacked). */
+export function clearContinuationState(sessionID: string): void {
+  const state = states.get(sessionID);
+  if (!state) return;
+  state.pending_continuation = false;
+  state.continuation_unacked = false;
+}
+
+/** True while a sent pin awaits its first clean answer. */
+export function continuationUnacked(sessionID: string): boolean {
+  return states.get(sessionID)?.continuation_unacked ?? false;
 }
 
 /** Register a pruned/frozen region hash; oldest dropped at the cap. */
@@ -276,6 +319,8 @@ export function compactionStateSnapshot(sessionID: string): {
   epoch_dirty: boolean;
   in_flight: boolean;
   force_compact: boolean;
+  pending_continuation: boolean;
+  continuation_unacked: boolean;
   stubbed_parts: Record<string, string>;
   guard_conflicts_reported: string[];
 } {
@@ -289,6 +334,8 @@ export function compactionStateSnapshot(sessionID: string): {
     epoch_dirty: state?.epoch_dirty ?? false,
     in_flight: state?.in_flight ?? false,
     force_compact: state?.force_compact ?? false,
+    pending_continuation: state?.pending_continuation ?? false,
+    continuation_unacked: state?.continuation_unacked ?? false,
     stubbed_parts: state ? Object.fromEntries(state.stubbed_parts) : {},
     guard_conflicts_reported: state ? [...state.guard_conflicts_reported] : [],
   };

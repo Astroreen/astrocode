@@ -834,6 +834,15 @@ export function captureToolError(
   return capture.event;
 }
 
+/** Finished + no error: the observable "clean generation" signal (see captureAssistantUsage). */
+export function isCleanAssistantCompletion(info: unknown): boolean {
+  if (!isPlainObject(info)) return false;
+  const time = isPlainObject(info.time) ? info.time : {};
+  return (
+    asFiniteNumber(time.completed) !== undefined && info.error == null
+  );
+}
+
 // Capture path wired into the message.updated hook: one "usage" record per
 // finished assistant message, plus a "cache_alarm" record when a large prompt
 // shows a degraded cache hit ratio. Returns the recorded payload (if any) so

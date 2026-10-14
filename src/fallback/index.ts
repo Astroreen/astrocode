@@ -39,6 +39,7 @@ import {
   getLastFallbackModel,
   getSameModelAttempts,
   incrementSameModelAttempts,
+  markSelfAbort,
   recordAttempt,
   resetFailures,
   resetSameModelAttempts,
@@ -63,6 +64,11 @@ export interface FallbackDecision {
 
 // One retry at a time per session.
 const inFlight = new Set<string>();
+
+/** True while a fallback dispatch (abort + resubmit) is running for the session. */
+export function isFallbackDispatchInFlight(sessionID: string): boolean {
+  return inFlight.has(sessionID);
+}
 
 // Marker on the synthetic note we prepend to a resubmission. Also used to strip
 // the note when replaying a synthetic-only user turn (see collectLastUserText).
@@ -301,6 +307,10 @@ async function abortSession(
 ): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    // Mark BEFORE the abort call: the abort event this causes is processed
+    // after the current handler returns, and the abort handler must recognize
+    // it as our own dispatch abort (not a user cancellation).
+    markSelfAbort(sessionID);
     await Promise.race([
       client.session.abort({ path: { id: sessionID } }),
       new Promise<void>((resolve) => {

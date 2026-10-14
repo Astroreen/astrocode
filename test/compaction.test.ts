@@ -14,17 +14,22 @@ import {
 } from "../src/config/astrocode";
 import {
   addRegionHash,
+  clearContinuationState,
   compactionStateSnapshot,
   consumePendingContinuation,
+  continuationUnacked,
   ensureCompactionState,
   getCompactionState,
   hasRegionHash,
   lastUsage,
   markCompactionComplete,
+  markContinuationSent,
   markScratchSession,
+  rearmPendingContinuation,
   rememberUsage,
   resetCompactionState,
   setInFlight,
+  setPendingContinuation,
   setSummaryFrozen,
   COMPACTION_STATE_LIMIT,
   REGION_HASH_LIMIT,
@@ -370,6 +375,8 @@ describe("compaction state", () => {
       epoch_dirty: false,
       in_flight: false,
       force_compact: false,
+      pending_continuation: false,
+      continuation_unacked: false,
       stubbed_parts: {},
       guard_conflicts_reported: [],
     });
@@ -990,5 +997,49 @@ describe("maybeCompact", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Continuation re-arm state (fallback-rotation pin re-arm)
+// ---------------------------------------------------------------------------
+
+describe("continuation re-arm state", () => {
+  test("re-armed pin is consumable exactly once; unacked survives the consume", () => {
+    setPendingContinuation("rearm-1");
+    consumePendingContinuation("rearm-1");
+    markContinuationSent("rearm-1");
+
+    expect(rearmPendingContinuation("rearm-1")).toBe(true);
+    expect(consumePendingContinuation("rearm-1")).toBe(true);
+    expect(consumePendingContinuation("rearm-1")).toBe(false);
+    expect(continuationUnacked("rearm-1")).toBe(true);
+  });
+
+  test("rotation without an unacked pin never arms (no spurious pin)", () => {
+    expect(rearmPendingContinuation("rearm-2")).toBe(false);
+    expect(consumePendingContinuation("rearm-2")).toBe(false);
+    expect(continuationUnacked("rearm-2")).toBe(false);
+  });
+
+  test("clearContinuationState clears both flags and blocks further re-arms", () => {
+    setPendingContinuation("rearm-3");
+    markContinuationSent("rearm-3");
+    clearContinuationState("rearm-3");
+
+    expect(consumePendingContinuation("rearm-3")).toBe(false);
+    expect(continuationUnacked("rearm-3")).toBe(false);
+    expect(rearmPendingContinuation("rearm-3")).toBe(false);
+  });
+
+  test("snapshot exposes both continuation flags", () => {
+    setPendingContinuation("rearm-4");
+    markContinuationSent("rearm-4");
+    expect(compactionStateSnapshot("rearm-4").pending_continuation).toBe(true);
+    expect(compactionStateSnapshot("rearm-4").continuation_unacked).toBe(true);
+
+    clearContinuationState("rearm-4");
+    expect(compactionStateSnapshot("rearm-4").pending_continuation).toBe(false);
+    expect(compactionStateSnapshot("rearm-4").continuation_unacked).toBe(false);
   });
 });

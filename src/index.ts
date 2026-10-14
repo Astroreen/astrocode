@@ -47,10 +47,10 @@ import {
   isSisyphusSession,
   buildDynamicSisyphusPrompt,
 } from "./prompts/sisyphus/dispatch";
-import { dispatchFallback, parseModelString } from "./fallback";
+import { dispatchFallback, isFallbackDispatchInFlight, parseModelString } from "./fallback";
 import { areModelsEquivalent } from "./fallback/canonicalize";
 import { clearAllModelCooldowns } from "./fallback/cooldown";
-import { clearAll as clearFallbackState, clearRetryKeys, markRetryKey } from "./fallback/state";
+import { clearAll as clearFallbackState, clearRetryKeys, markRetryKey, takeSelfAbort } from "./fallback/state";
 import {
   clearAllSessionModels,
   clearSessionModelState,
@@ -71,6 +71,7 @@ import {
   captureAssistantUsage,
   captureToolError,
   createTelemetryLogger,
+  isCleanAssistantCompletion,
   type TelemetryLogger,
 } from "./telemetry/log";
 import {
@@ -107,12 +108,19 @@ import {
 } from "./compaction/force";
 import { COMPACTING_PROMPT } from "./compaction/prompt";
 import {
+  clearContinuationState,
   consumePendingContinuation,
+  continuationUnacked,
   getCompactionState,
   lastUsage,
+  markContinuationSent,
   resetCompactionState,
   setForceCompact,
 } from "./compaction/state";
+import {
+  applyFallbackOutcomeToContinuation,
+  hasNonSyntheticUserContent,
+} from "./compaction/rearm";
 import {
   findAgentsMdFiles,
   buildAgentsMdContext,
@@ -470,6 +478,13 @@ const astrocodePlugin: Plugin = async (input, options) => {
             // believe the subagent stopped after partial work. The child's
             // result IS the task boundary; the parent decides what is next.
             if (isChildSession(target)) return;
+            // No double-fire with fallback's own resubmit: a dispatch in flight
+            // means a rotation is being processed right now; do not consume
+            // anything, the next idle reconsiders.
+            if (isFallbackDispatchInFlight(target)) {
+              log.info("continuation: fallback-in-flight; skip");
+              return;
+            }
             // Post-compaction continuation: a compaction (at this seam or the
             // turn boundary) armed the flag; re-prompt the model so it resumes
             // the task instead of stopping after its context was compacted.
@@ -482,6 +497,9 @@ const astrocodePlugin: Plugin = async (input, options) => {
                 max: astrocodeConfig.idleContinuation.max,
               });
               log.info(`compaction-continuation: ${cont.reason}`);
+              // The pin is out: track that it now awaits a clean answer
+              // (re-arm source).
+              if (cont.continued) markContinuationSent(target);
             } else if (astrocodeConfig.idleContinuation.enabled) {
               // Idle continuation is independent of fallback enablement.
               const result = await maybeContinueIdle(input.client, target, {
@@ -512,8 +530,23 @@ const astrocodePlugin: Plugin = async (input, options) => {
         if (event.type === "session.error") {
           const errName = getErrorName(event.properties?.error);
           if (errName === "MessageAbortedError" || errName === "AbortError") {
-            if (event.properties?.sessionID) {
-              recordAbort(event.properties.sessionID);
+            const sid = event.properties?.sessionID;
+            if (sid) {
+              if (takeSelfAbort(sid)) {
+                // Our own fallback-dispatch abort (src/fallback abortSession):
+                // not a user cancellation — must not suppress continuation or
+                // the idle nudge.
+                log.debug("continuation-rearm: ignored self-abort (fallback dispatch)");
+              } else {
+                recordAbort(sid);
+                if (
+                  continuationUnacked(sid) ||
+                  getCompactionState(sid)?.pending_continuation
+                ) {
+                  clearContinuationState(sid);
+                  log.info("continuation-rearm: cleared (abort)");
+                }
+              }
             }
           }
         }
@@ -529,6 +562,21 @@ const astrocodePlugin: Plugin = async (input, options) => {
             // the assistant message; budget.ts falls back to the agent last
             // seen on this session via the chat.message hook.
             if (payload) recordUsageSpend(payload.session_id, payload.cost_usd);
+            // Clean answer: the model accepted the pin (or the resumed task) —
+            // retire the continuation intent so no duplicate pin follows on a
+            // working session. Runs BEFORE the turn-boundary compaction: a
+            // compaction armed in the same handler must survive the clear
+            // (arm-after-clear ordering).
+            const cleanSid = (info as { sessionID?: unknown })?.sessionID;
+            if (
+              typeof cleanSid === "string" &&
+              isCleanAssistantCompletion(info) &&
+              (continuationUnacked(cleanSid) ||
+                getCompactionState(cleanSid)?.pending_continuation)
+            ) {
+              clearContinuationState(cleanSid);
+              log.info("continuation-rearm: stop (clean-answer)");
+            }
             // Compaction trigger (plan T9.2): evaluated at the turn boundary
             // — the same finished-assistant-message seam as the usage
             // capture. The usage snapshot is remembered here for the
@@ -581,11 +629,15 @@ const astrocodePlugin: Plugin = async (input, options) => {
 
         if (!fallbackConfig.enabled) return;
 
-        const logDecision = (hook: string, decision: {
+        const logDecision = (hook: string, sessionID: string, decision: {
+          retry: boolean;
           reason: string;
           model?: string;
           detail?: string;
         }) => {
+          // The fallback outcome retires or re-arms the compaction-continuation
+          // pin (rotation re-arms while unacked; chain exhaustion stops it).
+          applyFallbackOutcomeToContinuation(sessionID, decision);
           const text =
             `fallback(${hook}): ${decision.reason}` +
             (decision.model ? ` -> ${decision.model}` : "") +
@@ -612,6 +664,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
           if (!target) return;
           logDecision(
             "session.error",
+            target,
             await dispatchFallback(
               input.client,
               fallbackConfig,
@@ -638,6 +691,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
               : undefined;
           logDecision(
             "message.updated",
+            info.sessionID,
             await dispatchFallback(
               input.client,
               fallbackConfig,
@@ -665,7 +719,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
                 undefined,
                 telemetry,
               );
-              logDecision("message.part.updated", decision);
+              logDecision("message.part.updated", target, decision);
             }
           }
           return;
@@ -686,6 +740,7 @@ const astrocodePlugin: Plugin = async (input, options) => {
           if (!markRetryKey(target, retryKey)) return;
           logDecision(
             "session.status",
+            target,
             await dispatchFallback(
               input.client,
               fallbackConfig,
@@ -752,6 +807,19 @@ const astrocodePlugin: Plugin = async (input, options) => {
                 ? `ran (${result.outcome?.path ?? "unknown path"})`
                 : result.reason),
           );
+        }
+
+        // A genuine user message is manual intervention — drop the continuation
+        // intent entirely. Synthetic-only turns (our pin, the fallback note,
+        // subagent results) do not count.
+        if (hasNonSyntheticUserContent(output?.parts)) {
+          if (
+            continuationUnacked(sessionID) ||
+            getCompactionState(sessionID)?.pending_continuation
+          ) {
+            clearContinuationState(sessionID);
+            log.info("continuation-rearm: cleared (user-message)");
+          }
         }
 
         const state = getSessionModelState(sessionID);

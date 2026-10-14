@@ -14,7 +14,14 @@ import {
   maybeContinueIdle,
   resetIdleContinuationState,
 } from "../src/idle/continue";
-import { clearChildSessions, isChildSession } from "../src/fallback/subagent";
+import { clearChildSessions, isChildSession, registerChildSession } from "../src/fallback/subagent";
+import {
+  consumePendingContinuation,
+  continuationUnacked,
+  markContinuationSent,
+  resetCompactionState,
+  setPendingContinuation,
+} from "../src/compaction/state";
 import { AGENT_DISPLAY_NAMES } from "../src/agents/personas";
 
 describe("subagent model cascade", () => {
@@ -844,5 +851,299 @@ describe("astrocode plugin — RetryPart and status.next surfaces", () => {
       providerID: "openrouter",
       modelID: "one/a",
     });
+  });
+});
+
+describe("continuation re-arm (fallback rotation)", () => {
+  const CHAIN = [
+    "anthropic/claude-sonnet-4-6",
+    "openrouter/one/a",
+    "openrouter/two/b",
+  ];
+
+  const userMessage = {
+    info: {
+      role: "user",
+      agent: "Atlas - Plan Executor",
+      model: { providerID: "anthropic", modelID: "claude-sonnet-4-6" },
+    },
+    parts: [{ type: "text", text: "do the thing" }],
+  };
+
+  const enabledOptions = {
+    fallback: {
+      enabled: true,
+      models: CHAIN,
+      cooldown_seconds: 0,
+    },
+    compaction: { continue_after: true },
+    idleContinuation: { enabled: true, max: 3 },
+  };
+
+  function clientWith(messages: unknown[]) {
+    const calls = {
+      promptAsync: 0,
+      bodies: [] as Record<string, unknown>[],
+    };
+    const client = {
+      session: {
+        messages: async () => ({ data: messages }),
+        abort: async () => ({}),
+        promptAsync: async (options: { body: Record<string, unknown> }) => {
+          calls.promptAsync += 1;
+          calls.bodies.push(options.body);
+          return { data: {} };
+        },
+      },
+    };
+    return { client, calls };
+  }
+
+  function retryPartEvent(sessionID: string, attempt: number) {
+    return {
+      event: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: `part-${sessionID}-${attempt}`,
+            sessionID,
+            messageID: "msg-1",
+            type: "retry",
+            attempt,
+            error: {
+              name: "APIError",
+              data: {
+                message: "usage limit reached",
+                isRetryable: false,
+                responseBody:
+                  '{"error":{"type":"FreeUsageLimitError","message":"free usage limit"}}',
+              },
+            },
+            time: { created: 1 },
+          },
+        },
+      },
+    } as any;
+  }
+
+  // Seed "pin sent, unacked": the pin went out at an earlier idle (the arm
+  // was consumed by that idle) and no clean generation has answered it yet.
+  function seedUnacked(id: string) {
+    setPendingContinuation(id);
+    consumePendingContinuation(id);
+    markContinuationSent(id);
+  }
+
+  // Seed "re-armed pin awaiting fire": on top of the unacked pin, the flag is
+  // armed again (post-rotation state) so the next idle sends the pin.
+  function seedArmed(id: string) {
+    seedUnacked(id);
+    setPendingContinuation(id);
+  }
+
+  beforeEach(() => {
+    clearAllSessionModels();
+    clearFallbackState();
+    clearChildSessions();
+    resetCompactionState();
+    resetIdleContinuationState();
+  });
+
+  test("rotation re-arms; next idle re-pins on the fallback model", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    seedUnacked("re-1");
+
+    await hooks.event!(retryPartEvent("re-1", 1));
+
+    expect(calls.bodies.length).toBe(1);
+    expect((calls.bodies[0].parts as { text: string }[])[0].text).toMatch(
+      /^\[astrocode fallback\]/,
+    );
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-1" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(2);
+    expect((calls.bodies[1].parts as { text: string }[])[0].text).toMatch(
+      /^\[astrocode\] Context was compacted/,
+    );
+    expect(calls.bodies[1].model).toEqual({
+      providerID: "openrouter",
+      modelID: "one/a",
+    });
+  });
+
+  test("clean answer after the rotation stops the loop", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    seedUnacked("re-2");
+
+    await hooks.event!(retryPartEvent("re-2", 1));
+    await hooks.event!({
+      event: {
+        type: "message.updated",
+        properties: {
+          info: {
+            sessionID: "re-2",
+            role: "assistant",
+            time: { created: 1, completed: 2 },
+          },
+        },
+      },
+    } as any);
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-2" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(1);
+    expect(continuationUnacked("re-2")).toBe(false);
+  });
+
+  test("chain-exhausted stops the loop", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const oneLinkOptions = {
+      ...enabledOptions,
+      fallback: {
+        enabled: true,
+        models: ["openrouter/one/a"],
+        cooldown_seconds: 0,
+      },
+    };
+    const hooks = await astrocodePlugin({ client } as any, oneLinkOptions as any);
+    seedUnacked("re-3");
+    recordAttempt("re-3", "openrouter/one/a");
+
+    await hooks.event!(retryPartEvent("re-3", 1));
+
+    expect(calls.bodies.length).toBe(0);
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-3" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(0);
+    expect(continuationUnacked("re-3")).toBe(false);
+    expect(consumePendingContinuation("re-3")).toBe(false);
+  });
+
+  test("genuine user message clears the intent", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    seedUnacked("re-4");
+
+    await hooks["chat.message"]!(
+      { sessionID: "re-4" } as any,
+      { parts: [{ type: "text", text: "hi" }] } as any,
+    );
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-4" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(0);
+  });
+
+  test("synthetic-only chat.message does not clear", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    seedArmed("re-5");
+
+    await hooks["chat.message"]!(
+      { sessionID: "re-5" } as any,
+      {
+        parts: [
+          { type: "text", synthetic: true, text: "[astrocode fallback] retrying" },
+        ],
+      } as any,
+    );
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-5" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(1);
+  });
+
+  test("user abort clears the intent", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    seedUnacked("re-abort");
+
+    await hooks.event!({
+      event: {
+        type: "session.error",
+        properties: {
+          sessionID: "re-abort",
+          error: { name: "MessageAbortedError" },
+        },
+      },
+    } as any);
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-abort" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(0);
+  });
+
+  test("self-abort does not eat the re-arm", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    seedUnacked("re-6");
+
+    await hooks.event!(retryPartEvent("re-6", 1));
+    await hooks.event!({
+      event: {
+        type: "session.error",
+        properties: {
+          sessionID: "re-6",
+          error: { name: "MessageAbortedError" },
+        },
+      },
+    } as any);
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-6" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(2);
+  });
+
+  test("fallback-in-flight guard: idle mid-dispatch does not consume the pin", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    seedArmed("re-7");
+
+    const dispatch = hooks.event!(retryPartEvent("re-7", 1));
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-7" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(0);
+    expect(consumePendingContinuation("re-7")).toBe(true);
+
+    await Promise.race([
+      dispatch,
+      new Promise((resolve) => setTimeout(resolve, 50)),
+    ]);
+  });
+
+  test("child session rotation never re-arms", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const hooks = await astrocodePlugin({ client } as any, enabledOptions as any);
+    registerChildSession("re-8", "explore");
+    seedUnacked("re-8");
+
+    await hooks.event!(retryPartEvent("re-8", 1));
+
+    await hooks.event!({
+      event: { type: "session.idle", properties: { sessionID: "re-8" } },
+    } as any);
+
+    expect(calls.bodies.length).toBe(1);
+    expect(consumePendingContinuation("re-8")).toBe(false);
   });
 });
