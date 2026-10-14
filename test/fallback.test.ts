@@ -4,6 +4,7 @@ import { isRetryableError, getStatusCode, getErrorMessage, getWaitSeconds, class
 import {
   decideFallback,
   dispatchFallback,
+  isFallbackDispatchInFlight,
   parseModelString,
   pickFallbackModel,
   resolveFallbackModels,
@@ -12,6 +13,7 @@ import {
   clearAll,
   clearRetryKeys,
   markRetryKey,
+  markSelfAbort,
   recordAttempt,
   getAttemptCount,
   getSameModelAttempts,
@@ -19,6 +21,7 @@ import {
   resetSameModelAttempts,
   shouldThrottleSameModel,
   effectiveCooldownSeconds,
+  takeSelfAbort,
 } from "../src/fallback/state";
 import {
   clearAllSessionModels,
@@ -921,5 +924,96 @@ describe("dispatchFallback", () => {
     expect(decision.reason).toBe("disabled");
     expect(calls.abort).toBe(0);
     expect(calls.promptAsync).toBe(0);
+  });
+});
+describe("fallback dispatch self-abort + in-flight", () => {
+  beforeEach(() => {
+    clearAll();
+    clearAllSessionModels();
+    clearChildSessions();
+  });
+
+  const userMessage = {
+    info: {
+      role: "user",
+      agent: "Atlas - Plan Executor",
+      model: { providerID: "anthropic", modelID: "claude-sonnet-4-6" },
+    },
+    parts: [{ type: "text", text: "do the thing" }],
+  };
+
+  function clientWith(messages: unknown[]) {
+    const calls = {
+      abort: 0,
+      promptAsync: 0,
+      lastBody: undefined as Record<string, unknown> | undefined,
+    };
+    const client = {
+      session: {
+        messages: async () => ({ data: messages }),
+        abort: async () => {
+          calls.abort += 1;
+          return {};
+        },
+        promptAsync: async (options: { body: Record<string, unknown> }) => {
+          calls.promptAsync += 1;
+          calls.lastBody = options.body;
+          return { data: {} };
+        },
+      },
+    };
+    return { client, calls };
+  }
+
+  test("takeSelfAbort: read-and-clear within the freshness window, stale outside", () => {
+    markSelfAbort("sa-1", 1000);
+    expect(takeSelfAbort("sa-1", 5000)).toBe(true);
+    expect(takeSelfAbort("sa-1", 5000)).toBe(false);
+
+    markSelfAbort("sa-2", 1000);
+    expect(takeSelfAbort("sa-2", 1000 + 10_001)).toBe(false);
+  });
+
+  test("dispatchFallback marks a self-abort on the resubmit path", async () => {
+    const { client, calls } = clientWith([userMessage]);
+    const config = parseFallbackConfig({
+      enabled: true,
+      models: ["openrouter/~deepseek/deepseek-flash-latest"],
+      cooldown_seconds: 0,
+    });
+
+    const decision = await dispatchFallback(client as never, config, "sa-dispatch", {
+      message: "You've hit your session limit · resets 6pm",
+    });
+
+    expect(decision.retry).toBe(true);
+    expect(calls.abort).toBe(1);
+    expect(takeSelfAbort("sa-dispatch")).toBe(true);
+  });
+
+  test("isFallbackDispatchInFlight: unknown session false; true during a dispatch", async () => {
+    expect(isFallbackDispatchInFlight("inflight-none")).toBe(false);
+
+    const { client } = clientWith([userMessage]);
+    const hanging = {
+      ...client,
+      session: {
+        ...client.session,
+        messages: () => new Promise(() => {}),
+      },
+    };
+    const pending = dispatchFallback(
+      hanging as never,
+      parseFallbackConfig({
+        enabled: true,
+        models: ["openrouter/x/y"],
+        cooldown_seconds: 0,
+      }),
+      "inflight-1",
+      { message: "You've hit your session limit · resets 6pm" },
+    );
+    // The in-flight guard is set synchronously, before the first await.
+    expect(isFallbackDispatchInFlight("inflight-1")).toBe(true);
+    await Promise.race([pending, new Promise((resolve) => setTimeout(resolve, 50))]);
   });
 });
